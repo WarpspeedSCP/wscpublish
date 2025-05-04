@@ -1,4 +1,4 @@
-package com.example
+package dev.wscp
 
 import com.codahale.metrics.*
 import io.ktor.http.*
@@ -14,13 +14,17 @@ import kotlin.random.Random
 import kotlinx.css.*
 import kotlinx.html.*
 
-fun Application.configureMonitoring() {
-    install(DropwizardMetrics) {
-        Slf4jReporter.forRegistry(registry)
-            .outputTo(this@configureMonitoring.log)
-            .convertRatesTo(TimeUnit.SECONDS)
-            .convertDurationsTo(TimeUnit.MILLISECONDS)
-            .build()
-            .start(10, TimeUnit.SECONDS)
+object Routes {
+    const val HOME = "/"
+    const val ARCHIVE = "/archive"
+    const val ABOUT = "/about"
+}
+
+
+fun Application.configureRouting() {
+    routing {
+        // Static plugin. Try to access `/static/index.html`
+        staticResources("/static", "static")
+        staticResources("/", "/web")
     }
 }

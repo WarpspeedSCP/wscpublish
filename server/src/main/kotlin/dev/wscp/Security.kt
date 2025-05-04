@@ -1,4 +1,4 @@
-package com.example
+package dev.wscp
 
 import com.codahale.metrics.*
 import io.ktor.http.*
@@ -14,10 +14,15 @@ import kotlin.random.Random
 import kotlinx.css.*
 import kotlinx.html.*
 
-fun Application.configureRouting() {
-    routing {
-        // Static plugin. Try to access `/static/index.html`
-        staticResources("/static", "static")
-        staticResources("/", "/web")
+fun Application.configureSecurity() {
+    install(CSRF) {
+        // tests Origin is an expected value
+        allowOrigin("http://localhost:8080")
+    
+        // tests Origin matches Host header
+        originMatchesHost()
+    
+        // custom header checks
+        checkHeader("X-CSRF-Token")
     }
 }

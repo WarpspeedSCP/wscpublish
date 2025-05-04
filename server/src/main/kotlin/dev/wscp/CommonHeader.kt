@@ -1,4 +1,4 @@
-package com.example
+package dev.wscp
 
 
 import kotlinx.html.*
@@ -6,13 +6,20 @@ import java.nio.file.Paths
 import kotlin.io.path.*
 import kotlin.random.Random
 
-fun HTML.leaderboardPage(random: Random) {
+fun HTML.commonHeader(random: Random) {
     head {
-        title("HTMX Example")
+        title("WSCP's Blog")
         script(src = "/web.js") {}
         link(rel = "stylesheet", href = "/leaderboard.css")
+        meta {
+
+        }
     }
     body {
+        div {
+
+        }
+
         h1 {
             +"Leaderboard"
         }

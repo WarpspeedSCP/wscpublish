@@ -4,7 +4,8 @@ kotlin-version = "2.1.10"
 kotlinx-browser-version = "0.3"
 kotlinx-html-version = "0.12.0"
 ktor-version = "3.1.2"
-logback-version = "1.4.14"
+kotlinwind-version = "0.1.0"
+logback-version = "1.5.13"
 
 [libraries]
 ktor-server-html-builder = { module = "io.ktor:ktor-server-html-builder", version.ref = "ktor-version" }
@@ -12,6 +13,7 @@ kotlinx-html = { module = "org.jetbrains.kotlinx:kotlinx-html", version.ref = "k
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor-version" }
 kotlinx-browser = { module = "org.jetbrains.kotlinx:kotlinx-browser", version.ref = "kotlinx-browser-version" }
 kotlin-css = { module = "org.jetbrains:kotlin-css", version = "1.0.0-pre.129-kotlin-1.4.20" }
+kotlinwind-css = { module = "io.github.allangomes:kotlinwind-css", version.ref = "kotlinwind-version" }
 ktor-server-content-negotiation = { module = "io.ktor:ktor-server-content-negotiation", version.ref = "ktor-version" }
 ktor-server-metrics = { module = "io.ktor:ktor-server-metrics", version.ref = "ktor-version" }
 ktor-server-host-common = { module = "io.ktor:ktor-server-host-common", version.ref = "ktor-version" }

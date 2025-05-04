@@ -1,5 +1,6 @@
 package com.example
 
+import dev.wscp.module
 import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.server.testing.*

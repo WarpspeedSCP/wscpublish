@@ -1,4 +1,4 @@
-package com.example
+package dev.wscp
 
 import io.ktor.server.application.*
 

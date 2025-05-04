@@ -25,10 +25,12 @@ tasks.withType<ProcessResources> {
 }
 
 dependencies {
+    implementation(kotlin("reflect"))
     implementation(libs.ktor.server.html.builder)
-    implementation(libs.kotlinx.html)
     implementation(libs.ktor.server.core)
+    implementation(libs.kotlinx.html)
     implementation(libs.kotlin.css)
+    implementation(libs.kotlinwind.css)
     implementation(libs.ktor.server.content.negotiation)
     implementation(libs.ktor.server.metrics)
     implementation(libs.ktor.server.host.common)
