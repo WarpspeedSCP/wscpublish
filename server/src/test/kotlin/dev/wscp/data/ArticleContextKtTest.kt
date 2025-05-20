@@ -1,6 +1,5 @@
 package dev.wscp.data
 
-import kotlinx.css.times
 import org.junit.jupiter.api.Assertions.*
 import kotlin.test.Test
 
@@ -9,8 +8,18 @@ class ArticleContextKtTest {
     @Test
     fun testMdToks() {
         "# [abc](def)".mdTokens()
-        assertEquals(listOf("#", " ", "Hello", " ", "World"), "# Hello World".mdTokens())
-        assertEquals(listOf("*", " \t", "**", "abc", " ", "d", "**"), "* \t**abc d**".mdTokens())
+        assertEquals(
+            listOf(
+                MDToken.HTag.H1::class,
+                MDToken.TEXT::class,
+                MDToken.TEXT::class,
+                MDToken.TEXT::class,
+                MDToken.TEXT::class,
+                MDToken.EOF::class,
+            ),
+            "# Hello World".mdTokens().map { it::class }
+        )
+        assertEquals(listOf("*", " \t", "**", "abc", " ", "d", "**"), "**abc*\n* \t**abc d**".mdTokens())
         assertEquals(listOf("***", "abc", " ", "de", "**", " ", "f", "*"), "***abc de** f*".mdTokens())
     }
 

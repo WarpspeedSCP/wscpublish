@@ -3,6 +3,7 @@ package dev.wscp.data
 import io.ktor.http.*
 import kotlinx.html.*
 import java.io.File
+import java.net.URLEncoder
 import java.util.concurrent.atomic.AtomicBoolean
 
 enum class ArticleType(val id: String) {
@@ -77,7 +78,7 @@ sealed class MDToken(open val span: IntRange) {
     data class SINGLE_GRAVE(override val span: IntRange) : MDToken(span)
 
     // (\n```)|(```\n)
-    data class TRIPLE_GRAVE(override val span: IntRange) : MDToken(span)
+    data class TRIPLE_GRAVE(override val span: IntRange, val language: String? = null) : MDToken(span)
 
     // ([^\n \t]*)|(*[^\n \t])
     data class SINGLE_ASTERISK(override val span: IntRange) : MDToken(span)
@@ -92,7 +93,7 @@ sealed class MDToken(open val span: IntRange) {
     data class SINGLE_UNDERSCORE(override val span: IntRange) : MDToken(span)
 
     // -\s+
-    data class SINGLE_HYPHEN(val level: Int, override val span: IntRange) : MDToken(span)
+    data class UL_ITEM(val level: Int, override val span: IntRange) : MDToken(span)
     data class OL_ITEM(val level: Int, override val span: IntRange) : MDToken(span)
 
     // ---
@@ -135,47 +136,44 @@ sealed class MDToken(open val span: IntRange) {
 
     data class NEWLINE(override val span: IntRange) : MDToken(span)
 
+    data class ESCAPE(override val span: IntRange, val escapedChar: Char) : MDToken(span)
+
     data class EOF(override val span: IntRange) : MDToken(span)
 }
 
+sealed interface MDTokenHint {
+    object IsLinkStart: MDTokenHint
+    object IsLinkEnd: MDTokenHint
+    class IsUListStart(val indent: Int) : MDTokenHint
+    class IsOListStart(val indent: Int) : MDTokenHint
+}
+
+// TODO: Use java vector API to speed this up.
 class MDTokeniser(private val input: String) {
     private val tokens = mutableListOf<MDToken>()
     private var currToken = ""
-    private fun updateTokens(span: IntRange) = if (currToken.isNotEmpty()) {
+    private fun updateTokens(span: IntRange, tokenHint: MDTokenHint? = null) = if (currToken.isNotEmpty()) {
         tokens.add(
             when {
+                currToken.startsWith('\\') -> MDToken.ESCAPE(span, currToken[1])
                 currToken == "\n" -> MDToken.NEWLINE(span)
                 currToken == "`" -> MDToken.SINGLE_GRAVE(span)
-                currToken == "```" -> MDToken.TRIPLE_GRAVE(span)
-                currToken == "*" -> MDToken.SINGLE_ASTERISK(span)
+                currToken.startsWith("```") -> {
+                    if (currToken.length > 3) {
+                        MDToken.TRIPLE_GRAVE(span, currToken.substring(3))
+                    } else {
+                        MDToken.TRIPLE_GRAVE(span)
+                    }
+                }
+                currToken == "*" -> if (tokenHint is MDTokenHint.IsUListStart) MDToken.UL_ITEM(tokenHint.indent, span) else MDToken.SINGLE_ASTERISK(span)
                 currToken == "**" -> MDToken.DOUBLE_ASTERISK(span)
                 currToken == "***" -> MDToken.TRIPLE_ASTERISK(span)
-                currToken == "1." -> {
-                    var currPos = span.first
-                    while (currPos > 0 && input[currPos].isWhitespace() && input[currPos] != '\n') {
-                        currPos -= 1
-                    }
-                    val prev = input.getOrNull(currPos)
-                    if (prev != null && prev != '\n') {
-                        MDToken.TEXT("1.", span)
-                    } else {
-                        MDToken.OL_ITEM(span.first - currPos, span)
-                    }
-                }
-
-                currToken == "-" -> {
-                    var currPos = span.first - 1
-                    while (currPos > 0 && input[currPos].isWhitespace() && input[currPos] != '\n') {
-                        currPos -= 1
-                    }
-                    val prev = input.getOrNull(currPos)
-                    if (prev != null && prev != '\n') {
-                        MDToken.TEXT("-", span)
-                    } else {
-                        MDToken.SINGLE_HYPHEN(span.first - currPos, span)
-                    }
-                }
-
+                currToken == "1." && tokenHint is MDTokenHint.IsOListStart -> MDToken.OL_ITEM(tokenHint.indent, span)
+                currToken == "-" && tokenHint is MDTokenHint.IsUListStart -> MDToken.UL_ITEM(tokenHint.indent, span)
+                currToken == "![" -> MDToken.IMAGE_START(span)
+                currToken == "[" && tokenHint == MDTokenHint.IsLinkStart -> MDToken.LINK_START(span)
+                currToken == "]" && tokenHint == MDTokenHint.IsLinkEnd -> MDToken.LINK_END(span)
+                currToken == "](" -> MDToken.LINK_INTERSTICE(span)
                 currToken == "---" -> MDToken.TRIPLE_HYPHEN(span)
                 currToken == "====" -> MDToken.TRIPLE_EQUALS(span)
                 currToken == "#" -> MDToken.HTag.H1(span)
@@ -203,40 +201,111 @@ class MDTokeniser(private val input: String) {
                     updateTokens((index - currToken.length)..index)
                     currToken += chr
                     currToken += input.getOrNull(index + 1) ?: ""
-                    index += 1
+                    updateTokens(index..(index + 2), tokenHint = MDTokenHint.IsLinkStart)
+                    index += 2
                     continue
                 }
 
+                chr == '-' -> {
+                    updateTokens((index - currToken.length)..index)
+                    if (input.getOrNull(index + 1)?.isWhitespace() == true) {
+                        val optionalTypeHint = getListTypeHint(false)
+                        currToken += "-"
+
+                        updateTokens(index..(index + 2), tokenHint = optionalTypeHint)
+                    }
+                }
+
                 chr == '1' -> {
+                    updateTokens((index - currToken.length)..index)
                     if (input.getOrNull(index + 1) == '.' && input.getOrNull(index + 2)?.isWhitespace() == true) {
-                        updateTokens((index - currToken.length)..index)
+                        val optionalTypeHint = getListTypeHint(true)
                         currToken += "1."
+
+                        updateTokens(index..(index + 2), tokenHint = optionalTypeHint)
                         index += 2
+                        continue
                     }
                 }
 
                 chr == '*' || chr == '~' || chr == '#' || chr == '_' || chr == '`' -> {
-                    if (currToken.isEmpty() || currToken.endsWith(chr)) {
-                        currToken += chr
-                    } else {
-                        updateTokens((index - currToken.length)..index)
-                        currToken += chr
+                    updateTokens((index - currToken.length)..index)
+                    val optionalTypeHint = getListTypeHint(false)
+
+                    var tempIdx = index
+                    while (input.getOrNull(tempIdx) == chr) {
+                        if (tempIdx - index > 3) {
+                            break
+                        } else {
+                            currToken += chr
+                            tempIdx += 1
+                        }
+                    }
+
+                    updateTokens((tempIdx - currToken.length)..tempIdx, if(input.getOrNull(tempIdx)?.isWhitespace() != false) optionalTypeHint else null)
+
+                    index = tempIdx
+                    continue
+                }
+                chr == '!' -> {
+                    updateTokens((index - currToken.length)..index)
+                    currToken += chr
+                    if (input.getOrNull(index + 1) == '[') {
+                        var tempIdx = index
+                        while (input.getOrNull(tempIdx) != '\n') {
+                            if (input.getOrNull(tempIdx) == ']') break
+                            tempIdx += 1
+                        }
+                        if (input.getOrNull(tempIdx) == ']') {
+                            currToken += '['
+                            updateTokens(index..(index + 2))
+                            index += 2
+                            continue
+                        }
                     }
                 }
-
+                chr == '[' -> {
+                    updateTokens((index - currToken.length)..index)
+                    currToken += chr
+                    var tempIdx = index
+                    while (input.getOrNull(tempIdx) != '\n') {
+                        if (input.getOrNull(tempIdx) == ']') break
+                        tempIdx += 1
+                    }
+                    if (input.getOrNull(tempIdx) == ']') {
+                        updateTokens(index..(index + 1), tokenHint = MDTokenHint.IsLinkStart)
+                    }
+                }
                 chr == ']' -> {
                     updateTokens((index - currToken.length)..index)
                     currToken += chr
                     if (input.getOrNull(index + 1) == '(') {
                         currToken += input[index + 1]
-                        index += 1
+                        updateTokens(index..(index + 2))
+                        index += 2
+                        continue
                     }
                 }
-
+                chr == ')' -> {
+                    updateTokens((index - currToken.length)..index)
+                    var linkStartBeforeLinkEnd = false
+                    for (i in tokens.asReversed()) {
+                        if (i is MDToken.LINK_START) {
+                            linkStartBeforeLinkEnd = true
+                            break
+                        } else if (i is MDToken.LINK_END) {
+                            break
+                        }
+                    }
+                    if (linkStartBeforeLinkEnd) {
+                        updateTokens(index..(index + 1), tokenHint = MDTokenHint.IsLinkEnd)
+                    }
+                }
                 chr == '\n' -> {
                     updateTokens((index - currToken.length)..index)
                     currToken += chr
                     index += 1
+                    updateTokens((index - currToken.length)..index)
                     continue
                 }
 
@@ -248,6 +317,7 @@ class MDTokeniser(private val input: String) {
                         currToken += input[index]
                         index += 1
                     }
+                    updateTokens((index - currToken.length)..index)
                     continue
                 }
 
@@ -271,6 +341,7 @@ class MDTokeniser(private val input: String) {
                         }
                         currToken += input[index]
                     }
+                    updateTokens((index - currToken.length)..index)
                 }
             }
             index += 1
@@ -279,6 +350,30 @@ class MDTokeniser(private val input: String) {
         updateTokens((index - currToken.length)..<index)
         tokens.push(MDToken.EOF(index..index))
         return tokens
+    }
+
+    private fun getListTypeHint(isOrdered: Boolean): MDTokenHint? {
+        var wsBeforeNewline: Int? = null
+        if (tokens.isEmpty()) {
+            return if (!isOrdered) MDTokenHint.IsUListStart(0)
+            else MDTokenHint.IsOListStart(0)
+        }
+        for (i in tokens.asReversed()) {
+            if (i is MDToken.TEXT && i.text.isBlank()) {
+                wsBeforeNewline = i.text.length
+            } else if (wsBeforeNewline != null && i !is MDToken.NEWLINE) {
+                wsBeforeNewline = null
+                break
+            } else if (i is MDToken.NEWLINE) {
+                wsBeforeNewline = wsBeforeNewline ?: 0
+                break
+            }
+        }
+
+        return if (wsBeforeNewline != null) {
+            if (!isOrdered) MDTokenHint.IsUListStart(wsBeforeNewline)
+            else MDTokenHint.IsOListStart(wsBeforeNewline)
+        } else null
     }
 
     val output: List<MDToken>
@@ -328,14 +423,12 @@ class MarkdownTreeMaker {
         var pos = 0
         var indent = 0
 
-        var output = mutableListOf<MDFormat>(MDFormat.Div(mutableListOf()))
+        val output = mutableListOf<MDFormat>(MDFormat.Div(mutableListOf()))
         while (pos < input.size) {
-            val curr = input[pos]
-
-            when (curr) {
+            when (val curr = input[pos]) {
                 is MDToken.HTag -> {
                     val rest = input.subList(pos + 1, input.size).takeWhile { it !is MDToken.NEWLINE }
-                    val inner = parse(rest, lineColTracker) as MutableList<MDFormat>
+                    val inner = parse(rest, lineColTracker)
                     val parentDiv = output.findLast { it is MDFormat.Div } as MDFormat.Div?
                     val tag = when (curr) {
                         is MDToken.HTag.H1 -> MDFormat.H1(inner)
@@ -414,7 +507,7 @@ class MarkdownTreeMaker {
 
                 }
 
-                is MDToken.SINGLE_HYPHEN -> {
+                is MDToken.UL_ITEM -> {
                     if (output.lastOrNull() is MDFormat.UList) {
                         val currList = output.pop() as MDFormat.UList
                         if (currList.level == curr.level) {
@@ -430,12 +523,12 @@ class MarkdownTreeMaker {
                                         false // Two consecutive newlines ends the list item.
                                     }
                                     // Indicates we're either starting a new list item or moving back by one level.
-                                } else if (it is MDToken.SINGLE_HYPHEN && it.level <= curr.level) false
+                                } else if (it is MDToken.UL_ITEM && it.level <= curr.level) false
                                 else {
                                     prevWasNewline.set(false) // we only want to break if we see consecutive newlines.
                                     true
                                 }
-                            }.dropLastWhile { it !is MDToken.NEWLINE } // The current list item only consumes items up till the newline, and including it.
+                            }.dropLastWhile { it !is MDToken.NEWLINE && it !is MDToken.EOF } // The current list item only consumes items up till the newline, and including it.
 
                             pos += rest.size // We will be adding 1 to the current position after the when ends.
                             currList.items.addAll(parse(rest, lineColTracker))
@@ -459,7 +552,7 @@ class MarkdownTreeMaker {
                                         false // Two consecutive newlines ends the list item.
                                     }
                                     // Indicates we're either starting a new list item or moving back by one level.
-                                } else if (it is MDToken.SINGLE_HYPHEN && it.level <= curr.level) false
+                                } else if (it is MDToken.UL_ITEM && it.level <= curr.level) false
                                 else {
                                     prevWasNewline.set(false) // we only want to break if we see consecutive newlines.
                                     true
@@ -468,8 +561,6 @@ class MarkdownTreeMaker {
 
                             pos += rest.size // We will be adding 1 to the current position after the when ends.
                             currList.items.addAll(parse(rest, lineColTracker))
-
-
                         } else {
                             while (((output.top() as? MDFormat.MDList)?.level ?: 0) > curr.level) {
                                 val currLevel = output.pop() as MDFormat.MDList
@@ -487,7 +578,7 @@ class MarkdownTreeMaker {
                                         false // Two consecutive newlines ends the list item.
                                     }
                                     // Indicates we're either starting a new list item or moving back by one level.
-                                } else if (it is MDToken.SINGLE_HYPHEN && it.level <= curr.level) false
+                                } else if (it is MDToken.UL_ITEM && it.level <= curr.level) false
                                 else {
                                     prevWasNewline.set(false) // we only want to break if we see consecutive newlines.
                                     true
@@ -513,7 +604,7 @@ class MarkdownTreeMaker {
                                     false // Two consecutive newlines ends the list item.
                                 }
                                 // Indicates we're either starting a new list item or moving back by one level.
-                            } else if (it is MDToken.SINGLE_HYPHEN && it.level <= curr.level) false
+                            } else if (it is MDToken.UL_ITEM && it.level <= curr.level) false
                             else {
                                 prevWasNewline.set(false) // we only want to break if we see consecutive newlines.
                                 true
@@ -530,6 +621,15 @@ class MarkdownTreeMaker {
                 }
 
                 is MDToken.SINGLE_UNDERSCORE -> TODO()
+                is MDToken.ESCAPE -> {
+                    val currParent = output.top()
+                    val currFmt = MDFormat.Text(URLEncoder.encode(curr.escapedChar.toString(), "UTF-8"))
+                    if (currParent is MDFormat.Div) {
+                        currParent.inner.push(currFmt)
+                    } else {
+                        output.push(MDFormat.Div(inner = mutableListOf(currFmt)))
+                    }
+                }
                 is MDToken.TEXT -> {
                     val currParent = output.top()
                     val currFmt = MDFormat.Text(curr.text)
