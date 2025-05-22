@@ -6,21 +6,17 @@ import java.io.File
 import java.net.URLEncoder
 import java.util.concurrent.atomic.AtomicBoolean
 
-enum class ArticleType(val id: String) {
-    Tech("tech"),
-    Translation("tl"),
-}
-
 class ArticleFrontmatter(
     val title: String,
     val description: String,
     val date: String,
     val slug: String,
     val keywords: List<String>,
-    val type: ArticleType,
+    val type: String,
     val categories: List<String>,
     val mediaLocation: File? = null,
     val draft: Boolean = true,
+    val extras: Map<String, String>,
 )
 
 class LineColPosition(val startLine: Int, val startCol: Int, val endLine: Int, val endCol: Int)
@@ -142,8 +138,8 @@ sealed class MDToken(open val span: IntRange) {
 }
 
 sealed interface MDTokenHint {
-    object IsLinkStart: MDTokenHint
-    object IsLinkEnd: MDTokenHint
+    object IsLinkStart : MDTokenHint
+    object IsLinkEnd : MDTokenHint
     class IsUListStart(val indent: Int) : MDTokenHint
     class IsOListStart(val indent: Int) : MDTokenHint
 }
@@ -165,7 +161,12 @@ class MDTokeniser(private val input: String) {
                         MDToken.TRIPLE_GRAVE(span)
                     }
                 }
-                currToken == "*" -> if (tokenHint is MDTokenHint.IsUListStart) MDToken.UL_ITEM(tokenHint.indent, span) else MDToken.SINGLE_ASTERISK(span)
+
+                currToken == "*" -> if (tokenHint is MDTokenHint.IsUListStart) MDToken.UL_ITEM(
+                    tokenHint.indent,
+                    span
+                ) else MDToken.SINGLE_ASTERISK(span)
+
                 currToken == "**" -> MDToken.DOUBLE_ASTERISK(span)
                 currToken == "***" -> MDToken.TRIPLE_ASTERISK(span)
                 currToken == "1." && tokenHint is MDTokenHint.IsOListStart -> MDToken.OL_ITEM(tokenHint.indent, span)
@@ -242,11 +243,15 @@ class MDTokeniser(private val input: String) {
                         }
                     }
 
-                    updateTokens((tempIdx - currToken.length)..tempIdx, if(input.getOrNull(tempIdx)?.isWhitespace() != false) optionalTypeHint else null)
+                    updateTokens(
+                        (tempIdx - currToken.length)..tempIdx,
+                        if (input.getOrNull(tempIdx)?.isWhitespace() != false) optionalTypeHint else null
+                    )
 
                     index = tempIdx
                     continue
                 }
+
                 chr == '!' -> {
                     updateTokens((index - currToken.length)..index)
                     currToken += chr
@@ -264,6 +269,7 @@ class MDTokeniser(private val input: String) {
                         }
                     }
                 }
+
                 chr == '[' -> {
                     updateTokens((index - currToken.length)..index)
                     currToken += chr
@@ -276,6 +282,7 @@ class MDTokeniser(private val input: String) {
                         updateTokens(index..(index + 1), tokenHint = MDTokenHint.IsLinkStart)
                     }
                 }
+
                 chr == ']' -> {
                     updateTokens((index - currToken.length)..index)
                     currToken += chr
@@ -286,6 +293,7 @@ class MDTokeniser(private val input: String) {
                         continue
                     }
                 }
+
                 chr == ')' -> {
                     updateTokens((index - currToken.length)..index)
                     var linkStartBeforeLinkEnd = false
@@ -301,6 +309,7 @@ class MDTokeniser(private val input: String) {
                         updateTokens(index..(index + 1), tokenHint = MDTokenHint.IsLinkEnd)
                     }
                 }
+
                 chr == '\n' -> {
                     updateTokens((index - currToken.length)..index)
                     currToken += chr
@@ -392,11 +401,17 @@ sealed interface MDFormat {
     data class H5(val inner: MutableList<MDFormat>) : MDFormat
     data class H6(val inner: MutableList<MDFormat>) : MDFormat
 
+    object HorizontalRule : MDFormat
+    object LineBreak : MDFormat
+
     data class Paragraph(val inner: MutableList<MDFormat>) : MDFormat
-    data class Div(val inner: MutableList<MDFormat>) : MDFormat
+    data class Div(val inner: MutableList<MDFormat>) : MDFormat {
+        constructor(vararg items: MDFormat) : this(items.toMutableList())
+    }
     data class Bold(val inner: MutableList<MDFormat>) : MDFormat
     data class Italic(val inner: MutableList<MDFormat>) : MDFormat
     data class Strikethrough(val inner: MutableList<MDFormat>) : MDFormat
+
     data class Underline(val inner: MutableList<MDFormat>) : MDFormat
     data class Link(val inner: MutableList<MDFormat>, val url: String) : MDFormat
     data class Code(val inner: MutableList<MDFormat>, val language: String = "") : MDFormat
@@ -406,12 +421,14 @@ sealed interface MDFormat {
     data class OList(override val items: MutableList<MDFormat>, override val level: Int) : MDList(items, level)
     data class Quote(val inner: MutableList<MDFormat>) : MDFormat
     data class Image(val url: String, val alt: String) : MDFormat
+
+
 //    data class MDTable(val columns: List<String>, val rows: List<List<MDFormat>>) : MDFormat
 }
 
-fun <T> MutableList<T>.pop(): T = this.removeLast()
+fun <T> MutableList<T>.pop(): T? = this.removeLastOrNull()
 fun <T> MutableList<T>.push(item: T) = this.add(item)
-fun <T> MutableList<T>.top(): T = this.last()
+fun <T> MutableList<T>.top(): T? = this.lastOrNull()
 
 class MarkdownTreeMaker {
     fun parse(input: String): List<MDFormat> {
@@ -421,9 +438,9 @@ class MarkdownTreeMaker {
 
     fun parse(input: List<MDToken>, lineColTracker: LineColTracker): MutableList<MDFormat> {
         var pos = 0
-        var indent = 0
 
-        val output = mutableListOf<MDFormat>(MDFormat.Div(mutableListOf()))
+        val output = mutableListOf<MDFormat>()
+        var currList: MDFormat.MDList? = null
         while (pos < input.size) {
             when (val curr = input[pos]) {
                 is MDToken.HTag -> {
@@ -470,7 +487,14 @@ class MarkdownTreeMaker {
                 is MDToken.LINK_END -> TODO()
                 is MDToken.LINK_INTERSTICE -> TODO()
                 is MDToken.LINK_START -> TODO()
-                is MDToken.NEWLINE -> {}
+                is MDToken.NEWLINE -> {
+                    if (input.getOrNull(pos + 1) is MDToken.NEWLINE) {
+                        output.push(MDFormat.LineBreak)
+                        pos += 1
+                    } else {
+                        output.push(MDFormat.Text("\n"))
+                    }
+                }
                 is MDToken.SINGLE_ASTERISK -> {
                     val rest = input.subList(pos + 1, input.size)
                         .takeWhile { it !is MDToken.SINGLE_ASTERISK && it !is MDToken.TRIPLE_ASTERISK }
@@ -508,119 +532,40 @@ class MarkdownTreeMaker {
                 }
 
                 is MDToken.UL_ITEM -> {
-                    if (output.lastOrNull() is MDFormat.UList) {
-                        val currList = output.pop() as MDFormat.UList
-                        if (currList.level == curr.level) {
-                            // I just wanted an easy way to modify a captured value lololol
-                            val prevWasNewline = AtomicBoolean(false)
+                    val (rest, atEnd) = collectListTokensTillNextItemOnLevel(
+                        input,
+                        pos,
+                        curr
+                    )
 
-                            val rest = input.subList(pos + 1, input.size).takeWhile {
-                                if (it is MDToken.NEWLINE) {
-                                    if (prevWasNewline.get().not()) {
-                                        prevWasNewline.set(true)
-                                        true
-                                    } else {
-                                        false // Two consecutive newlines ends the list item.
-                                    }
-                                    // Indicates we're either starting a new list item or moving back by one level.
-                                } else if (it is MDToken.UL_ITEM && it.level <= curr.level) false
-                                else {
-                                    prevWasNewline.set(false) // we only want to break if we see consecutive newlines.
-                                    true
-                                }
-                            }.dropLastWhile { it !is MDToken.NEWLINE && it !is MDToken.EOF } // The current list item only consumes items up till the newline, and including it.
+                    pos += rest.size // We will be adding 1 to the current position after the when ends.
 
-                            pos += rest.size // We will be adding 1 to the current position after the when ends.
-                            currList.items.addAll(parse(rest, lineColTracker))
-
-                            output.push(currList) // Stay on the current level.
+                    val res = if (currList != null) {
+                        val result: MutableList<MDFormat> = if (currList.level == curr.level) {
+                            parse(rest, lineColTracker)
                         } else if (currList.level < curr.level) {
-                            // we're going a level deeper, so push the current level back onto the stack.
-                            output.push(currList)
-                            val currList = MDFormat.UList(mutableListOf(), curr.level)
-                            output.push(currList) // Stay on the current level.
+                            val nestedList = MDFormat.UList(mutableListOf(), curr.level)
+                            nestedList.items.addAll(parse(rest, lineColTracker))
+                            mutableListOf(nestedList)
+                        } else mutableListOf()
 
-                            // I just wanted an easy way to modify a captured value lololol
-                            val prevWasNewline = AtomicBoolean(false)
-
-                            val rest = input.subList(pos + 1, input.size).takeWhile {
-                                if (it is MDToken.NEWLINE) {
-                                    if (prevWasNewline.get().not()) {
-                                        prevWasNewline.set(true)
-                                        true
-                                    } else {
-                                        false // Two consecutive newlines ends the list item.
-                                    }
-                                    // Indicates we're either starting a new list item or moving back by one level.
-                                } else if (it is MDToken.UL_ITEM && it.level <= curr.level) false
-                                else {
-                                    prevWasNewline.set(false) // we only want to break if we see consecutive newlines.
-                                    true
-                                }
-                            }.dropLastWhile { it !is MDToken.NEWLINE } // The current list item only consumes items up till the newline, and including it.
-
-                            pos += rest.size // We will be adding 1 to the current position after the when ends.
-                            currList.items.addAll(parse(rest, lineColTracker))
-                        } else {
-                            while (((output.top() as? MDFormat.MDList)?.level ?: 0) > curr.level) {
-                                val currLevel = output.pop() as MDFormat.MDList
-                                (output.top() as? MDFormat.MDList)?.items?.push(currLevel)
-                            }
-                            // I just wanted an easy way to modify a captured value lololol
-                            val prevWasNewline = AtomicBoolean(false)
-
-                            val rest = input.subList(pos + 1, input.size).takeWhile {
-                                if (it is MDToken.NEWLINE) {
-                                    if (prevWasNewline.get().not()) {
-                                        prevWasNewline.set(true)
-                                        true
-                                    } else {
-                                        false // Two consecutive newlines ends the list item.
-                                    }
-                                    // Indicates we're either starting a new list item or moving back by one level.
-                                } else if (it is MDToken.UL_ITEM && it.level <= curr.level) false
-                                else {
-                                    prevWasNewline.set(false) // we only want to break if we see consecutive newlines.
-                                    true
-                                }
-                            }.dropLastWhile { it !is MDToken.NEWLINE } // The current list item only consumes items up till the newline, and including it.
-
-                            pos += rest.size // We will be adding 1 to the current position after the when ends.
-                            val currParent = output.top() as MDFormat.MDList
-                            currParent.items.push(MDFormat.Div(parse(rest, lineColTracker)))
-                        }
+                        MDFormat.Div(result) // Stay on the current level.
+                    } else {
+                        currList = MDFormat.UList(mutableListOf(), curr.level)
+                        MDFormat.Div(parse(rest, lineColTracker))
                     }
-                    else {
-                        val currList = MDFormat.UList(mutableListOf(), curr.level)
-                        // I just wanted an easy way to modify a captured value lololol
-                        val prevWasNewline = AtomicBoolean(false)
 
-                        val rest = input.subList(pos + 1, input.size).takeWhile {
-                            if (it is MDToken.NEWLINE) {
-                                if (prevWasNewline.get().not()) {
-                                    prevWasNewline.set(true)
-                                    true
-                                } else {
-                                    false // Two consecutive newlines ends the list item.
-                                }
-                                // Indicates we're either starting a new list item or moving back by one level.
-                            } else if (it is MDToken.UL_ITEM && it.level <= curr.level) false
-                            else {
-                                prevWasNewline.set(false) // we only want to break if we see consecutive newlines.
-                                true
-                            }
-                        }.dropLastWhile { it !is MDToken.NEWLINE } // The current list item only consumes items up till the newline, and including it.
+                    currList.items.push(res)
 
-                        pos += rest.size // We will be adding 1 to the current position after the when ends.
-                        output.push(currList) // Stay on the current level.
-                        currList.items.addAll(parse(rest, lineColTracker))
-
-
-
+                    if (atEnd) {
+                        output.push(currList)
+                        currList = null
                     }
                 }
 
-                is MDToken.SINGLE_UNDERSCORE -> TODO()
+                is MDToken.SINGLE_UNDERSCORE -> {
+
+                }
                 is MDToken.ESCAPE -> {
                     val currParent = output.top()
                     val currFmt = MDFormat.Text(URLEncoder.encode(curr.escapedChar.toString(), "UTF-8"))
@@ -630,15 +575,12 @@ class MarkdownTreeMaker {
                         output.push(MDFormat.Div(inner = mutableListOf(currFmt)))
                     }
                 }
+
                 is MDToken.TEXT -> {
-                    val currParent = output.top()
                     val currFmt = MDFormat.Text(curr.text)
-                    if (currParent is MDFormat.Div) {
-                        currParent.inner.push(currFmt)
-                    } else {
-                        output.push(MDFormat.Div(inner = mutableListOf(currFmt)))
-                    }
+                    output.push(currFmt)
                 }
+
                 is MDToken.TRIPLE_ASTERISK -> TODO()
                 is MDToken.TRIPLE_EQUALS -> TODO()
                 is MDToken.TRIPLE_GRAVE -> TODO()
@@ -650,6 +592,41 @@ class MarkdownTreeMaker {
         }
 
         return output
+    }
+
+    private fun collectListTokensTillNextItemOnLevel(
+        input: List<MDToken>,
+        pos: Int,
+        curr: MDToken.UL_ITEM
+    ): Pair<List<MDToken>, Boolean> {
+        // I just wanted an easy way to modify a captured value lololol
+        val prevWasNewline = AtomicBoolean(false)
+
+        val rest = input.subList(pos + 1, input.size).takeWhile {
+            // A side effect of this check is that for token fragments (when parsing a sublist for example)
+            // this code exits with prevWasNewline set to true once the list is exhausted, despite
+            // there not being multiple newlines.
+            // This is actually correct because it causes the sublist to terminate
+            // and be added into the parent list.
+            if (it is MDToken.NEWLINE || it is MDToken.EOF) {
+                if (prevWasNewline.get().not()) {
+                    prevWasNewline.set(true)
+                    true
+                } else {
+                    false // Two consecutive newlines ends the list item.
+                }
+                // Indicates we're either starting a new list item or moving back by one level.
+            } else if (it is MDToken.UL_ITEM && it.level <= curr.level) {
+                prevWasNewline.set(false)
+                false
+            }
+            else {
+                prevWasNewline.set(false) // we only want to break if we see consecutive newlines.
+                true
+            }
+        }.dropLastWhile { it !is MDToken.NEWLINE && it !is MDToken.EOF } // The current list item only consumes items up till the newline.
+
+        return rest to prevWasNewline.get()
     }
 
     val String.isMDSignificant: Boolean
