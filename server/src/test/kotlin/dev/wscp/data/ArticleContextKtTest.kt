@@ -33,7 +33,7 @@ class ArticleContextKtTest {
 
         val input = """
 <p>
-- a
+- [a](<https://abc.def/(abc)>)
 - b
   <hr/>
  - *c

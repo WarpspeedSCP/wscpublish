@@ -1,6 +1,8 @@
 package dev.wscp.markdown
 
 import dev.wscp.utils.push
+import java.net.URI
+import java.net.URL
 
 
 data class LineColPosition(val startLine: Int, val startCol: Int, val endLine: Int, val endCol: Int) {
@@ -100,6 +102,8 @@ sealed class MDToken(open val span: IntRange) {
     // ^](.*$
     data class LINK_INTERSTICE(override val span: IntRange) : MDToken(span)
 
+    data class LINK_URI(val uri: URI, override val span: IntRange) : MDToken(span)
+
     // ^).*$
     data class LINK_END(override val span: IntRange) : MDToken(span)
 
@@ -161,8 +165,8 @@ class MDTokeniser(private val input: String) {
                 currToken == "-" && tokenHint is MDTokenHint.IsUListStart -> MDToken.UL_ITEM(tokenHint.indent, span)
                 currToken == "![" -> MDToken.IMAGE_START(span)
                 currToken == "[" && tokenHint == MDTokenHint.IsLinkStart -> MDToken.LINK_START(span)
-                currToken == "]" && tokenHint == MDTokenHint.IsLinkEnd -> MDToken.LINK_END(span)
                 currToken == "](" -> MDToken.LINK_INTERSTICE(span)
+                currToken == ")" && tokenHint == MDTokenHint.IsLinkEnd -> MDToken.LINK_END(span)
                 currToken == "---" -> MDToken.TRIPLE_HYPHEN(span)
                 currToken == "====" -> MDToken.TRIPLE_EQUALS(span)
                 currToken == "#" -> MDToken.HTag.H1(span)
@@ -374,14 +378,27 @@ class MDTokeniser(private val input: String) {
                     currToken += chr
                     if (input.getOrNull(index + 1) == '(') {
                         currToken += input[index + 1]
-                        updateTokens(index..(index + 2))
+                        updateTokens(index..<(index + 2))
                         index += 2
+
+                        var tempIndex = index
+                        if (input[tempIndex] == '<') {
+                            while (tempIndex < input.length && input[tempIndex] != '>') tempIndex += 1
+                        } else {
+                            while (tempIndex < input.length && input[tempIndex] != ')') tempIndex += 1
+                        }
+
+                        // Get only the link.
+                        val linkUri = URI(input.substring(index + 1, tempIndex))
+                        tokens += MDToken.LINK_URI(linkUri, index..<(tempIndex + 1))
+                        if (input[tempIndex] == '>') tempIndex += 1
+                        index = tempIndex
+
                         continue
                     }
                 }
 
                 chr == ')' -> {
-                    updateTokens((index - currToken.length)..index)
                     var linkStartBeforeLinkEnd = false
                     for (i in tokens.asReversed()) {
                         if (i is MDToken.LINK_START) {
@@ -391,13 +408,15 @@ class MDTokeniser(private val input: String) {
                             break
                         }
                     }
+                    currToken += chr
                     if (linkStartBeforeLinkEnd) {
-                        updateTokens(index..(index + 1), tokenHint = MDTokenHint.IsLinkEnd)
+                        updateTokens(index..<(index + 1), tokenHint = MDTokenHint.IsLinkEnd)
+                    } else {
+                        updateTokens(index..<(index + 1))
                     }
                 }
 
                 chr == '\n' -> {
-                    updateTokens((index - currToken.length)..index)
                     currToken += chr
                     index += 1
                     updateTokens((index - currToken.length)..index)

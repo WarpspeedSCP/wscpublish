@@ -6,6 +6,7 @@ import dev.wscp.utils.push
 import io.ktor.http.*
 import kotlinx.html.DIV
 import java.io.File
+import java.net.URI
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.collections.getOrNull
 import kotlin.collections.plus
@@ -46,14 +47,14 @@ sealed interface MDFormat {
     data class Strikethrough(val inner: MutableList<MDFormat>) : MDFormat
 
     data class Underline(val inner: MutableList<MDFormat>) : MDFormat
-    data class Link(val inner: MutableList<MDFormat>, val url: String) : MDFormat
+    data class Link(val inner: MutableList<MDFormat>, val uri: URI?) : MDFormat
     data class Code(val inner: MutableList<MDFormat>, val language: String? = null) : MDFormat
     data class Text(val text: String) : MDFormat
     sealed class MDList(open val items: MutableList<MDFormat>, open val level: Int) : MDFormat
     data class UList(override val items: MutableList<MDFormat>, override val level: Int) : MDList(items, level)
     data class OList(override val items: MutableList<MDFormat>, override val level: Int) : MDList(items, level)
     data class Quote(val inner: MutableList<MDFormat>) : MDFormat
-    data class Image(val url: String, val alt: String) : MDFormat
+    data class Image(val alt: MutableList<MDFormat>, val uri: URI?) : MDFormat
     data class CustomHtml(val tag: MDToken.HTML_TAG, val inner: MutableList<MDFormat>) : MDFormat
     data class CustomScript(val tag: MDToken.SCRIPT_TAG) : MDFormat
 
@@ -122,11 +123,28 @@ class MarkdownTreeMaker {
                     output.push(MDFormat.CustomHtml(tag = curr, inner = contents))
                     pos = endIndex
                 }
+                is MDToken.LINK_URI -> {}
                 is MDToken.HTML_CLOSE_TAG -> {} // never encountered, we swallow these in the case above.
-                is MDToken.IMAGE_START -> TODO()
-                is MDToken.LINK_END -> TODO()
-                is MDToken.LINK_INTERSTICE -> TODO()
-                is MDToken.LINK_START -> TODO()
+                is MDToken.LINK_END -> {}
+                is MDToken.LINK_INTERSTICE -> {}
+                is MDToken.LINK_START, is MDToken.IMAGE_START -> {
+                    val rest = input.subList(pos + 1, input.size).takeWhile { it !is MDToken.LINK_END }
+                    pos += rest.size
+                    if (input.getOrNull(pos + 1) is MDToken.LINK_END) {
+                        pos += 1
+                    }
+
+                    val url = rest.find { it is MDToken.LINK_URI } as? MDToken.LINK_URI
+                    val desc = rest.takeWhile { it !is MDToken.LINK_INTERSTICE }
+
+                    val parsedDesc = parse(desc, lineColTracker)
+                    val res = if (curr is MDToken.IMAGE_START) {
+                        MDFormat.Image(parsedDesc, url?.uri)
+                    } else {
+                        MDFormat.Link(parsedDesc, url?.uri)
+                    }
+                    output.push(res)
+                }
                 is MDToken.NEWLINE -> {
                     if (input.getOrNull(pos + 1) is MDToken.NEWLINE) {
                         output.push(MDFormat.LineBreak)
@@ -264,8 +282,19 @@ class MarkdownTreeMaker {
                 }
 
                 is MDToken.SINGLE_UNDERSCORE -> {
+                    val rest = input.subList(pos + 1, input.size).takeWhile { it !is MDToken.SINGLE_UNDERSCORE }
 
+                    val inner = if (rest.last() is MDToken.EOF || input[pos + rest.size + 1] is MDToken.SINGLE_UNDERSCORE) {
+                        parse(rest, lineColTracker)
+                    } else {
+                        throw IllegalStateException("unreachable")
+                    }
+
+                    val tag = MDFormat.Italic(inner)
+                    output.push(tag)
+                    pos += inner.size + 1 // We want to eat the closing token as well. That will happen after we exit the when.
                 }
+
                 is MDToken.ESCAPE -> {
                     val currFmt = MDFormat.Text(curr.escapedChar.toString())
                     output.push(currFmt)
