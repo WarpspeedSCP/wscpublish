@@ -1,7 +1,8 @@
 package dev.wscp.data
 
 import io.ktor.http.*
-import kotlinx.html.*
+import jdk.internal.net.http.common.Pair.pair
+import kotlinx.html.DIV
 import java.io.File
 import java.net.URLEncoder
 import java.util.concurrent.atomic.AtomicBoolean
@@ -19,7 +20,9 @@ class ArticleFrontmatter(
     val extras: Map<String, String>,
 )
 
-class LineColPosition(val startLine: Int, val startCol: Int, val endLine: Int, val endCol: Int)
+data class LineColPosition(val startLine: Int, val startCol: Int, val endLine: Int, val endCol: Int) {
+    override fun toString(): String = "$startLine:$startCol-$endLine:$endCol"
+}
 
 class LineColTracker(val text: String) {
 
@@ -38,7 +41,6 @@ class LineColTracker(val text: String) {
         }
         data
     }
-
 
     fun getLineColForSpan(span: IntRange): LineColPosition? {
         val startLineEntry = lineColCache.find { it.first.contains(span.first) }
@@ -89,8 +91,9 @@ sealed class MDToken(open val span: IntRange) {
     data class SINGLE_UNDERSCORE(override val span: IntRange) : MDToken(span)
 
     // -\s+
-    data class UL_ITEM(val level: Int, override val span: IntRange) : MDToken(span)
-    data class OL_ITEM(val level: Int, override val span: IntRange) : MDToken(span)
+    sealed class LIST_ITEM(open val level: Int, override val span: IntRange) : MDToken(span)
+    data class UL_ITEM(override val level: Int, override val span: IntRange) : LIST_ITEM(level, span)
+    data class OL_ITEM(override val level: Int, override val span: IntRange) : LIST_ITEM(level, span)
 
     // ---
     data class TRIPLE_HYPHEN(override val span: IntRange) : MDToken(span)
@@ -99,7 +102,9 @@ sealed class MDToken(open val span: IntRange) {
     data class TRIPLE_EQUALS(override val span: IntRange) : MDToken(span)
 
     // ^<[^>]*>$
-    data class HTML_TAG(val tag: String, override val span: IntRange) : MDToken(span)
+    data class HTML_TAG(val tag: String, val attributes: Map<String, String?>, override val span: IntRange, val selfClosing: Boolean = false) : MDToken(span)
+    data class HTML_CLOSE_TAG(val tag: String, override val span: IntRange) : MDToken(span)
+    data class SCRIPT_TAG(val script: String, val attributes: Map<String, String?>, override val span: IntRange) : MDToken(span)
 
     data class TEXT(val text: String, override val span: IntRange) : MDToken(span)
 
@@ -183,7 +188,6 @@ class MDTokeniser(private val input: String) {
                 currToken == "####" -> MDToken.HTag.H4(span)
                 currToken == "#####" -> MDToken.HTag.H5(span)
                 currToken == "######" -> MDToken.HTag.H6(span)
-                currToken.startsWith("<") -> MDToken.HTML_TAG(currToken, span)
                 else -> {
                     MDToken.TEXT(currToken, span)
                 }
@@ -194,12 +198,111 @@ class MDTokeniser(private val input: String) {
 
     private fun tokenise(): List<MDToken> {
         var index = 0
-        while (index < input.length) {
+        outer@while (index < input.length) {
 
             val chr = input[index]
             when {
+                chr == '<' -> {
+                    val attributes = mutableListOf<Pair<String, String?>>()
+                    var isClose = false
+                    var isSelfClosing = false
+                    var isScript = false
+                    var tmpIndex = index
+                    var tagName = ""
+                    // <abc def="a" fgh="e" />
+                    while (tmpIndex < input.length && input[tmpIndex] != '>') {
+                        if (isClose) {
+                            tmpIndex += 1
+                            continue
+                        }
+
+                        var currThing = input[tmpIndex]
+
+                        while (currThing.isWhitespace()) {
+                            tmpIndex += 1
+                            currThing = input[tmpIndex]
+                        }
+
+                        if (currThing == '<') {
+                            if (input.getOrNull(tmpIndex + 1) == '/'){
+                                isClose = true
+                                tmpIndex += 1
+                            }
+                            tmpIndex += 1
+                            tagName = input.substring(tmpIndex).takeWhile { it.isWordPart() }
+                            tmpIndex += tagName.length
+
+                            if (tagName == "script") isScript = true
+
+                            continue
+                        }
+
+                        if (currThing == '/' && input.getOrNull(tmpIndex + 1) == '>') {
+                            isSelfClosing = true
+                            tmpIndex += 2
+                            break
+                        }
+
+                        val attributeName = if (currThing.isLetter()) {
+                            val savedIndex = tmpIndex
+                            while (tmpIndex < input.length && input[tmpIndex].isWordPart()) tmpIndex += 1
+                            currThing = input.getOrNull(tmpIndex) ?: throw IllegalStateException("Unexpected end of input.")
+                            input.substring(savedIndex, tmpIndex)
+                        } else null
+
+                        if (currThing == '=') {
+                            tmpIndex += 1
+                            currThing = input[tmpIndex]
+                        }
+
+                        val attributeValue = if (currThing == '"') {
+                            val savedIndex = tmpIndex
+                            tmpIndex += 1
+                            while (tmpIndex < input.length && input[tmpIndex] != '"') tmpIndex += 1
+                            val attributeContents = input.substring(savedIndex, tmpIndex)
+                            attributeContents.trim('"')
+                        } else null
+
+                        if (attributeName != null) {
+                            attributes.push(attributeName to attributeValue)
+                        }
+
+                        if (tmpIndex >= input.length) throw IllegalStateException("Invalid HTML tag at byte $index!")
+
+                        if (input[tmpIndex] == '>') {
+                            if (isScript) {
+                                val endIndex = input.indexOf("</script>", startIndex = tmpIndex)
+                                if (endIndex < 0) throw IllegalStateException("Unclosed script tag at byte $index!")
+                                val actualEnd = endIndex + "</script>".length
+                                val contents = input.substring(tmpIndex + 1, endIndex)
+                                tokens += MDToken.SCRIPT_TAG(script = contents, attributes.toMap(), index ..< actualEnd)
+                                tmpIndex = actualEnd
+                                isSelfClosing = true
+                                break
+                            }
+                        }
+
+                        tmpIndex += 1
+                    }
+
+                    if (isSelfClosing) {
+                        if (!isScript) {
+                            val token = MDToken.HTML_TAG(tagName, attributes.toMap(), index ..< tmpIndex, selfClosing = true)
+                            tokens += token
+                        }
+                    } else {
+                        val token = if (isClose) {
+                            MDToken.HTML_CLOSE_TAG(tagName, index..< tmpIndex)
+                        } else {
+                            MDToken.HTML_TAG(tagName, attributes.toMap(), index ..< tmpIndex)
+                        }
+                        tokens += token
+                    }
+
+                    index = tmpIndex
+                }
                 chr == '\\' -> {
-                    updateTokens((index - currToken.length)..index)
+                    updateTokens((index - currToken.length)..<index)
                     currToken += chr
                     currToken += input.getOrNull(index + 1) ?: ""
                     updateTokens(index..(index + 2), tokenHint = MDTokenHint.IsLinkStart)
@@ -414,14 +517,15 @@ sealed interface MDFormat {
 
     data class Underline(val inner: MutableList<MDFormat>) : MDFormat
     data class Link(val inner: MutableList<MDFormat>, val url: String) : MDFormat
-    data class Code(val inner: MutableList<MDFormat>, val language: String = "") : MDFormat
+    data class Code(val inner: MutableList<MDFormat>, val language: String? = null) : MDFormat
     data class Text(val text: String) : MDFormat
     sealed class MDList(open val items: MutableList<MDFormat>, open val level: Int) : MDFormat
     data class UList(override val items: MutableList<MDFormat>, override val level: Int) : MDList(items, level)
     data class OList(override val items: MutableList<MDFormat>, override val level: Int) : MDList(items, level)
     data class Quote(val inner: MutableList<MDFormat>) : MDFormat
     data class Image(val url: String, val alt: String) : MDFormat
-
+    data class CustomHtml(val tag: MDToken.HTML_TAG, val inner: MutableList<MDFormat>) : MDFormat
+    data class CustomScript(val tag: MDToken.SCRIPT_TAG) : MDFormat
 
 //    data class MDTable(val columns: List<String>, val rows: List<List<MDFormat>>) : MDFormat
 }
@@ -458,31 +562,35 @@ class MarkdownTreeMaker {
                     parentDiv?.inner?.push(tag)
                         ?: throw IllegalStateException("No parent div found for ${curr.javaClass.simpleName}!")
                     pos += inner.size // The newline will be consumed outside the when block.
-
                 }
-
-                is MDToken.DOUBLE_ASTERISK -> {
-                    val rest = input.subList(pos + 1, input.size)
-                        .takeWhile { it !is MDToken.DOUBLE_ASTERISK && it !is MDToken.TRIPLE_ASTERISK }
-                    val inner =
-                        if (rest.last() is MDToken.EOF || input[pos + rest.size + 1] is MDToken.DOUBLE_ASTERISK) {
-                            parse(rest, lineColTracker) as MutableList<MDFormat>
-                        } else if (input[pos + rest.size + 1] is MDToken.TRIPLE_ASTERISK) {
-                            parse(
-                                rest + MDToken.SINGLE_ASTERISK(input[pos + rest.size + 1].span),
-                                lineColTracker
-                            ) as MutableList<MDFormat>
-                        } else {
-                            throw IllegalStateException("unreachable")
+                is MDToken.SCRIPT_TAG -> {
+                    output.push(MDFormat.CustomScript(curr))
+                }
+                is MDToken.HTML_TAG -> {
+                    val tagStack = mutableListOf<MDToken.HTML_TAG>()
+                    val iter = input.subList(pos + 1, input.size)
+                    var endIndex = -1
+                    for ((idx, i) in iter.withIndex()) {
+                        if (i is MDToken.HTML_TAG) {
+                            tagStack += i
+                        } else if (i is MDToken.HTML_CLOSE_TAG) {
+                            if (tagStack.lastOrNull()?.tag == i.tag) tagStack.pop()
+                            else if (tagStack.isEmpty() && i.tag == curr.tag) {
+                                endIndex = idx
+                                break
+                            }
                         }
-                    val tag = MDFormat.Bold(inner)
-                    output.push(tag)
-                    pos += inner.size
-                    // We want to eat the closing token as well;
-                    // this will happen right after the when ends.
-                }
+                    }
 
-                is MDToken.HTML_TAG -> TODO()
+                    if (endIndex < 0) throw IllegalStateException("No closing tag for $curr, at ${lineColTracker.getLineColForSpan(curr.span)}")
+
+                    val rest = input.subList(pos + 1, endIndex + 1)
+
+                    val contents = parse(rest, lineColTracker)
+                    output.push(MDFormat.CustomHtml(tag = curr, inner = contents))
+                    pos = endIndex
+                }
+                is MDToken.HTML_CLOSE_TAG -> {} // never encountered, we swallow these in the case above.
                 is MDToken.IMAGE_START -> TODO()
                 is MDToken.LINK_END -> TODO()
                 is MDToken.LINK_INTERSTICE -> TODO()
@@ -495,44 +603,109 @@ class MarkdownTreeMaker {
                         output.push(MDFormat.Text("\n"))
                     }
                 }
+
+                is MDToken.TRIPLE_ASTERISK -> {
+                    val gotSingleFirst = AtomicBoolean(false)
+                    val gotDoubleFirst = AtomicBoolean(false)
+                    val rest = input.subList(pos + 1, input.size)
+                        .takeWhile {
+                            if (it is MDToken.SINGLE_ASTERISK) {
+                                if (gotDoubleFirst.get()) false
+                                else {
+                                    gotSingleFirst.set(true)
+                                    true
+                                }
+                            } else if (it is MDToken.DOUBLE_ASTERISK) {
+                                if (gotSingleFirst.get()) false
+                                else {
+                                    gotDoubleFirst.set(true)
+                                    true
+                                }
+                            } else if (it is MDToken.TRIPLE_ASTERISK) {
+                                !gotSingleFirst.get() && !gotDoubleFirst.get()
+                            } else true
+                        }
+
+                    // assume we always get a valid index, guaranteed by the check above.
+                    val result = if (gotSingleFirst.get()) {
+                        val singleIndex = rest.indexOfFirst { it is MDToken.SINGLE_ASTERISK }
+                        val italicSpan = rest.subList(0, singleIndex)
+                        val italicElement = MDFormat.Italic(parse(italicSpan, lineColTracker))
+                        val boldedResult = parse(rest.subList(singleIndex + 1, rest.size), lineColTracker)
+                        val finalResult = MDFormat.Bold(mutableListOf<MDFormat>(italicElement).apply { addAll(boldedResult) })
+                        finalResult
+                    } else if (gotDoubleFirst.get()) {
+                        val doubleIndex = rest.indexOfFirst { it is MDToken.DOUBLE_ASTERISK }
+                        val boldSpan = rest.subList(0, doubleIndex)
+                        val boldElement = MDFormat.Bold(parse(boldSpan, lineColTracker))
+                        val italicResult = parse(rest.subList(doubleIndex + 1, rest.size), lineColTracker)
+                        val finalResult = MDFormat.Italic(mutableListOf<MDFormat>(boldElement).apply { addAll(italicResult) })
+                        finalResult
+                    } else {
+                        val finalResult = parse(rest, lineColTracker)
+                        MDFormat.Bold(mutableListOf(MDFormat.Italic(finalResult)))
+                    }
+
+                    // The end element will be consumed by way of increment after the when block.
+                    pos += rest.size + 1
+
+                    output.push(result)
+                }
+
                 is MDToken.SINGLE_ASTERISK -> {
                     val rest = input.subList(pos + 1, input.size)
                         .takeWhile { it !is MDToken.SINGLE_ASTERISK && it !is MDToken.TRIPLE_ASTERISK }
                     val inner =
                         if (rest.last() is MDToken.EOF || input[pos + rest.size + 1] is MDToken.SINGLE_ASTERISK) {
-                            parse(rest, lineColTracker) as MutableList<MDFormat>
+                            parse(rest, lineColTracker)
                         } else if (input[pos + rest.size + 1] is MDToken.TRIPLE_ASTERISK) {
                             parse(
                                 rest + MDToken.DOUBLE_ASTERISK(input[pos + rest.size + 1].span),
                                 lineColTracker
-                            ) as MutableList<MDFormat>
+                            )
                         } else {
                             throw IllegalStateException("unreachable")
                         }
                     val tag = MDFormat.Italic(inner)
                     output.push(tag)
-                    pos += inner.size // We want to eat the closing token as well. That will happen after we exit the when.
+                    pos += rest.size + 1 // We want to eat the closing token as well. That will happen after we exit the when.
+                }
+
+                is MDToken.DOUBLE_ASTERISK -> {
+                    val rest = input.subList(pos + 1, input.size)
+                        .takeWhile { it !is MDToken.DOUBLE_ASTERISK && it !is MDToken.TRIPLE_ASTERISK }
+                    val inner =
+                        if (rest.lastOrNull() is MDToken.EOF || input.getOrNull(pos + rest.size + 1) is MDToken.DOUBLE_ASTERISK) {
+                            parse(rest, lineColTracker)
+                        } else if (input.getOrNull(pos + rest.size + 1) is MDToken.TRIPLE_ASTERISK) {
+                            parse(
+                                rest + MDToken.SINGLE_ASTERISK(input[pos + rest.size + 1].span),
+                                lineColTracker
+                            )
+                        } else {
+                            throw IllegalStateException("unreachable")
+                        }
+                    val tag = MDFormat.Bold(inner)
+                    output.push(tag)
+                    pos += rest.size + 1
+                    // We want to eat the closing token as well;
+                    // this will happen right after the when ends.
                 }
 
                 is MDToken.SINGLE_GRAVE -> {
                     val rest = input.subList(pos + 1, input.size).takeWhile { it !is MDToken.SINGLE_GRAVE }
                     val inner = if (rest.last() is MDToken.EOF || input[pos + rest.size + 1] is MDToken.SINGLE_GRAVE) {
-                        parse(rest, lineColTracker) as MutableList<MDFormat>
+                        parse(rest, lineColTracker)
                     } else {
                         throw IllegalStateException("unreachable")
                     }
                     val tag = MDFormat.Code(inner)
                     output.push(tag)
-                    pos += inner.size // We want to eat the closing token as well. That will happen after we exit the when.
-
+                    pos += inner.size + 1 // We want to eat the closing token as well. That will happen after we exit the when.
                 }
 
-                is MDToken.OL_ITEM -> {
-
-                }
-
-                is MDToken.UL_ITEM -> {
-                    val (rest, atEnd) = collectListTokensTillNextItemOnLevel(
+                is MDToken.LIST_ITEM -> {
+                    var (rest, atEnd) = collectListTokensTillNextItemOnLevel(
                         input,
                         pos,
                         curr
@@ -540,22 +713,17 @@ class MarkdownTreeMaker {
 
                     pos += rest.size // We will be adding 1 to the current position after the when ends.
 
-                    val res = if (currList != null) {
-                        val result: MutableList<MDFormat> = if (currList.level == curr.level) {
-                            parse(rest, lineColTracker)
-                        } else if (currList.level < curr.level) {
-                            val nestedList = MDFormat.UList(mutableListOf(), curr.level)
-                            nestedList.items.addAll(parse(rest, lineColTracker))
-                            mutableListOf(nestedList)
-                        } else mutableListOf()
-
-                        MDFormat.Div(result) // Stay on the current level.
-                    } else {
-                        currList = MDFormat.UList(mutableListOf(), curr.level)
-                        MDFormat.Div(parse(rest, lineColTracker))
+                    if (input.getOrNull(pos + 1) is MDToken.NEWLINE) {
+                        pos += 1
+                        rest += input[pos]
                     }
 
+                    val (res, newCurrList) = parseListItem(currList, curr, rest, lineColTracker)
+
+                    currList = newCurrList
+
                     currList.items.push(res)
+
 
                     if (atEnd) {
                         output.push(currList)
@@ -567,23 +735,31 @@ class MarkdownTreeMaker {
 
                 }
                 is MDToken.ESCAPE -> {
-                    val currParent = output.top()
-                    val currFmt = MDFormat.Text(URLEncoder.encode(curr.escapedChar.toString(), "UTF-8"))
-                    if (currParent is MDFormat.Div) {
-                        currParent.inner.push(currFmt)
-                    } else {
-                        output.push(MDFormat.Div(inner = mutableListOf(currFmt)))
-                    }
-                }
-
-                is MDToken.TEXT -> {
-                    val currFmt = MDFormat.Text(curr.text)
+                    val currFmt = MDFormat.Text(curr.escapedChar.toString())
                     output.push(currFmt)
                 }
 
-                is MDToken.TRIPLE_ASTERISK -> TODO()
+                is MDToken.TEXT -> {
+                    if (curr.text.isBlank() && input.getOrNull(pos + 1).let { it is MDToken.UL_ITEM || it is MDToken.OL_ITEM }) {
+                        // skip if this is just blank space before a list item, to avoid it getting added where it shouldn't.
+                    } else {
+                        val currFmt = MDFormat.Text(curr.text)
+                        output.push(currFmt)
+                    }
+                }
+
                 is MDToken.TRIPLE_EQUALS -> TODO()
-                is MDToken.TRIPLE_GRAVE -> TODO()
+                is MDToken.TRIPLE_GRAVE -> {
+                    val rest = input.subList(pos + 1, input.size).takeWhile { it !is MDToken.TRIPLE_GRAVE }
+                    val inner = if (rest.last() is MDToken.EOF || input[pos + rest.size + 1] is MDToken.SINGLE_GRAVE) {
+                        parse(rest, lineColTracker)
+                    } else {
+                        throw IllegalStateException("unreachable")
+                    }
+                    val tag = MDFormat.Code(inner, language = curr.language)
+                    output.push(tag)
+                    pos += inner.size + 1 // We want to eat the closing token as well. That will happen after we exit the when.
+                }
                 is MDToken.TRIPLE_HYPHEN -> TODO()
                 is MDToken.EOF -> {}
             }
@@ -594,10 +770,34 @@ class MarkdownTreeMaker {
         return output
     }
 
+    private fun parseListItem(
+        currList: MDFormat.MDList?,
+        curr: MDToken.LIST_ITEM,
+        rest: List<MDToken>,
+        lineColTracker: LineColTracker
+    ): Pair<MDFormat.Div, MDFormat.MDList> {
+        val result = if (currList != null) {
+            val result: MutableList<MDFormat> = if (currList.level == curr.level) {
+                parse(rest, lineColTracker)
+            } else if (currList.level < curr.level) {
+                val nestedList = if (curr is MDToken.OL_ITEM) MDFormat.OList(mutableListOf(), curr.level) else MDFormat.UList(mutableListOf(), curr.level)
+                nestedList.items.addAll(parse(rest, lineColTracker))
+                mutableListOf(nestedList)
+            } else mutableListOf()
+
+            MDFormat.Div(result) to currList // Stay on the current level.
+        } else {
+            val newCurrList = if (curr is MDToken.OL_ITEM) MDFormat.OList(mutableListOf(), curr.level) else MDFormat.UList(mutableListOf(), curr.level)
+            MDFormat.Div(parse(rest, lineColTracker)) to newCurrList
+        }
+
+        return result
+    }
+
     private fun collectListTokensTillNextItemOnLevel(
         input: List<MDToken>,
         pos: Int,
-        curr: MDToken.UL_ITEM
+        curr: MDToken.LIST_ITEM
     ): Pair<List<MDToken>, Boolean> {
         // I just wanted an easy way to modify a captured value lololol
         val prevWasNewline = AtomicBoolean(false)
@@ -616,7 +816,7 @@ class MarkdownTreeMaker {
                     false // Two consecutive newlines ends the list item.
                 }
                 // Indicates we're either starting a new list item or moving back by one level.
-            } else if (it is MDToken.UL_ITEM && it.level <= curr.level) {
+            } else if (it is MDToken.LIST_ITEM && it.level <= curr.level) {
                 prevWasNewline.set(false)
                 false
             }

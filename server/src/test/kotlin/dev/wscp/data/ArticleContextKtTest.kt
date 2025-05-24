@@ -28,9 +28,15 @@ class ArticleContextKtTest {
         val parser = MarkdownTreeMaker()
 
         val input = """
+<p>
 - a
 - b
- - c
+  <hr/>
+ - *c
+   \*** e
+   ***
+ * ***abc** de*
+</p>
 - d
 """.trimIndent()
 
