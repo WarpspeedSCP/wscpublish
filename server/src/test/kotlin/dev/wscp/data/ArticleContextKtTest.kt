@@ -1,5 +1,9 @@
 package dev.wscp.data
 
+import dev.wscp.markdown.LineColTracker
+import dev.wscp.markdown.MDToken
+import dev.wscp.markdown.MDTokeniser
+import dev.wscp.markdown.mdTokens
 import org.junit.jupiter.api.Assertions.*
 import kotlin.test.Test
 
