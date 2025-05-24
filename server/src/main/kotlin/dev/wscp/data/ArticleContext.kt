@@ -309,7 +309,10 @@ class MarkdownTreeMaker {
                     }
                 }
 
-                is MDToken.TRIPLE_EQUALS -> TODO()
+                is MDToken.TRIPLE_EQUALS -> {
+                    output.push(MDFormat.HorizontalRule)
+                }
+
                 is MDToken.TRIPLE_GRAVE -> {
                     val rest = input.subList(pos + 1, input.size).takeWhile { it !is MDToken.TRIPLE_GRAVE }
                     val inner = if (rest.last() is MDToken.EOF || input[pos + rest.size + 1] is MDToken.SINGLE_GRAVE) {
@@ -321,7 +324,12 @@ class MarkdownTreeMaker {
                     output.push(tag)
                     pos += inner.size + 1 // We want to eat the closing token as well. That will happen after we exit the when.
                 }
-                is MDToken.TRIPLE_HYPHEN -> TODO()
+
+                // TODO: This should be different
+                is MDToken.TRIPLE_HYPHEN -> {
+                    output.push(MDFormat.HorizontalRule)
+                }
+
                 is MDToken.EOF -> {}
             }
 
