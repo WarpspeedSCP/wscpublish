@@ -6,6 +6,7 @@ kotlinx-html-version = "0.12.0"
 ktor-version = "3.1.2"
 kotlinwind-version = "0.1.0"
 logback-version = "1.5.13"
+ktoml-version = "0.7.0"
 
 [libraries]
 ktor-server-html-builder = { module = "io.ktor:ktor-server-html-builder", version.ref = "ktor-version" }

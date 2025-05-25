@@ -37,6 +37,7 @@ dependencies {
     implementation(libs.ktor.server.csrf)
     implementation(libs.ktor.server.netty)
     implementation(libs.logback.classic)
+    implementation()
     testImplementation(libs.ktor.server.test.host)
     testImplementation(libs.kotlin.test.junit)
 }

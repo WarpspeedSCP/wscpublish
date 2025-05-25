@@ -75,10 +75,11 @@ sealed class MDToken(open val span: IntRange) {
     // _
     data class SINGLE_UNDERSCORE(override val span: IntRange) : MDToken(span)
 
-    // -\s+
     sealed class LIST_ITEM(open val level: Int, override val span: IntRange) : MDToken(span)
     data class UL_ITEM(override val level: Int, override val span: IntRange) : LIST_ITEM(level, span)
     data class OL_ITEM(override val level: Int, override val span: IntRange) : LIST_ITEM(level, span)
+    // Uses the same level structure.
+    data class BQUOTE(override val level: Int, override val span: IntRange) : LIST_ITEM(level, span)
 
     // ---
     data class TRIPLE_HYPHEN(override val span: IntRange) : MDToken(span)
@@ -132,6 +133,7 @@ sealed class MDToken(open val span: IntRange) {
 sealed interface MDTokenHint {
     object IsLinkStart : MDTokenHint
     object IsLinkEnd : MDTokenHint
+    class IsBQuote(val level: Int) : MDTokenHint
     class IsUListStart(val indent: Int) : MDTokenHint
     class IsOListStart(val indent: Int) : MDTokenHint
 }
@@ -158,7 +160,7 @@ class MDTokeniser(private val input: String) {
                     tokenHint.indent,
                     span
                 ) else MDToken.SINGLE_ASTERISK(span)
-
+                currToken.startsWith('>') && tokenHint is MDTokenHint.IsBQuote -> MDToken.BQUOTE(tokenHint.level, span)
                 currToken == "**" -> MDToken.DOUBLE_ASTERISK(span)
                 currToken == "***" -> MDToken.TRIPLE_ASTERISK(span)
                 currToken == "1." && tokenHint is MDTokenHint.IsOListStart -> MDToken.OL_ITEM(tokenHint.indent, span)
@@ -185,10 +187,36 @@ class MDTokeniser(private val input: String) {
 
     private fun tokenise(): List<MDToken> {
         var index = 0
-        outer@while (index < input.length) {
 
+        if (input.startsWith("---")) {
+            var tmpIndex = 3
+            val finalIndex = input.indexOf("\n---\n", startIndex = tmpIndex)
+            val frontmatter = input.substring(tmpIndex, finalIndex)
+
+            val parsedFrontmatter =
+        }
+
+        outer@while (index < input.length) {
             val chr = input[index]
             when {
+                chr == '>' -> {
+                    val tokensTillPrevNewline = tokens.asReversed().takeWhile { it !is MDToken.NEWLINE }
+                    var tmpIndex = index
+                    var tempChr: Char? = input[tmpIndex]
+                    while (tempChr == '>') {
+                        currToken += tempChr
+                        tmpIndex = tmpIndex + 1
+                        tempChr = input.getOrNull(tmpIndex)
+                    }
+                    val nextIsWhitespace = input.getOrNull(tmpIndex).let { it != null && it != '\n' && it.isWhitespace() }
+
+                    if (tokensTillPrevNewline.all { it is MDToken.NEWLINE || it is MDToken.UL_ITEM || it is MDToken.OL_ITEM || (it is MDToken.TEXT && it.text.isBlank()) } && nextIsWhitespace) {
+                        updateTokens(index..<tmpIndex +1, MDTokenHint.IsBQuote(currToken.length))
+                    } else {
+                        updateTokens(index..<tmpIndex + 1)
+                    }
+                    index = tmpIndex
+                }
                 chr == '<' -> {
                     val attributes = mutableListOf<Pair<String, String?>>()
                     var isClose = false
