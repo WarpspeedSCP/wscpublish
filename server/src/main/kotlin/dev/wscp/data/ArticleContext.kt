@@ -142,7 +142,6 @@ class MarkdownTreeMaker {
 
         val output = mutableListOf<MDFormat>()
         var currList: MDFormat.MDList? = null
-        var currBQuote: MDFormat.Quote? = null
 
         while (pos < input.size) {
             when (val curr = input[pos]) {

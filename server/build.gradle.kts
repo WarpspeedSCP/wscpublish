@@ -2,6 +2,7 @@
 plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.ktor)
+    kotlin("plugin.serialization") version "2.1.20"
 }
 
 application {
@@ -37,7 +38,8 @@ dependencies {
     implementation(libs.ktor.server.csrf)
     implementation(libs.ktor.server.netty)
     implementation(libs.logback.classic)
-    implementation()
+    implementation(libs.ktoml.core)
+    implementation(libs.ktoml.file)
     testImplementation(libs.ktor.server.test.host)
     testImplementation(libs.kotlin.test.junit)
 }
