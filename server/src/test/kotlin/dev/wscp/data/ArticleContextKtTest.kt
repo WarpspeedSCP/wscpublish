@@ -4,7 +4,11 @@ import dev.wscp.markdown.LineColTracker
 import dev.wscp.markdown.MDToken
 import dev.wscp.markdown.MDTokeniser
 import dev.wscp.markdown.mdTokens
+import kotlinx.html.ARTICLE
+import kotlinx.html.DIV
+import kotlinx.html.HTML
 import org.junit.jupiter.api.Assertions.*
+import java.io.File
 import kotlin.test.Test
 
 class ArticleContextKtTest {
@@ -31,7 +35,7 @@ class ArticleContextKtTest {
     fun parse() {
         val parser = MarkdownTreeMaker()
 
-        val input = """
+        var input = """
 <p style1="3" onClick="console.log('a' > 'b')">
 - [a](<https://abc.def/(abc)>)
 - b
@@ -39,7 +43,8 @@ class ArticleContextKtTest {
  - *c
    \*** e
    ***
- * ***abc** de*
+ * ***abc\
+   def** de*
 </p>
 - > d
   > e
@@ -50,7 +55,8 @@ class ArticleContextKtTest {
   - j
 """.trimIndent()
 
+//        input = File("/home/wscp/wscp_dev/content/posts/tls/jintai/vol2/chapter2/v2c2p1.md").readText()
         val output = MDTokeniser(input).output
-        val outut = parser.parse(output, LineColTracker(input))
+        val outut = parser.parse<ARTICLE>(output, LineColTracker(input))
     }
 }

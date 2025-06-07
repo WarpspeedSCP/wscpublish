@@ -1,8 +1,11 @@
 package dev.wscp.markdown
 
+import dev.wscp.data.ArticleFrontmatter
+import dev.wscp.utils.pop
 import dev.wscp.utils.push
+import kotlinx.serialization.decodeFromString
 import java.net.URI
-import java.net.URL
+import kotlin.math.PI
 
 
 data class LineColPosition(val startLine: Int, val startCol: Int, val endLine: Int, val endCol: Int) {
@@ -87,12 +90,21 @@ sealed class MDToken(open val span: IntRange) {
     // ===
     data class TRIPLE_EQUALS(override val span: IntRange) : MDToken(span)
 
+    data class TRIPLE_UNDERSCORE(override val span: IntRange) : MDToken(span)
+
+    data class LINEBREAK(override val span: IntRange) : MDToken(span)
+
     // ^<[^>]*>$
     data class HTML_TAG(val tag: String, val attributes: Map<String, String?>, override val span: IntRange, val selfClosing: Boolean = false) : MDToken(span)
     data class HTML_CLOSE_TAG(val tag: String, override val span: IntRange) : MDToken(span)
     data class SCRIPT_TAG(val script: String, val attributes: Map<String, String?>, override val span: IntRange) : MDToken(span)
 
-    data class TEXT(val text: String, override val span: IntRange) : MDToken(span)
+    data class TEXT(val text: String, override val span: IntRange) : MDToken(span) {
+        operator fun plus(other: String) = TEXT(
+            this.text + other,
+            this.span.first..<(this.span.last + other.length)
+        )
+    }
 
     // ^![.*$
     data class IMAGE_START(override val span: IntRange) : MDToken(span)
@@ -103,7 +115,7 @@ sealed class MDToken(open val span: IntRange) {
     // ^](.*$
     data class LINK_INTERSTICE(override val span: IntRange) : MDToken(span)
 
-    data class LINK_URI(val uri: URI, override val span: IntRange) : MDToken(span)
+    data class LINK_URI(val uri: String, override val span: IntRange) : MDToken(span)
 
     // ^).*$
     data class LINK_END(override val span: IntRange) : MDToken(span)
@@ -131,6 +143,7 @@ sealed class MDToken(open val span: IntRange) {
 }
 
 sealed interface MDTokenHint {
+    object IsInlineBreak : MDTokenHint
     object IsLinkStart : MDTokenHint
     object IsLinkEnd : MDTokenHint
     class IsBQuote(val level: Int) : MDTokenHint
@@ -145,7 +158,10 @@ class MDTokeniser(private val input: String) {
     private fun updateTokens(span: IntRange, tokenHint: MDTokenHint? = null) = if (currToken.isNotEmpty()) {
         tokens.add(
             when {
-                currToken.startsWith('\\') -> MDToken.ESCAPE(span, currToken[1])
+                currToken.startsWith('\\') -> {
+                    if (tokenHint is MDTokenHint.IsInlineBreak) MDToken.LINEBREAK(span)
+                    else MDToken.ESCAPE(span, currToken[1])
+                }
                 currToken == "\n" -> MDToken.NEWLINE(span)
                 currToken == "`" -> MDToken.SINGLE_GRAVE(span)
                 currToken.startsWith("```") -> {
@@ -169,8 +185,9 @@ class MDTokeniser(private val input: String) {
                 currToken == "[" && tokenHint == MDTokenHint.IsLinkStart -> MDToken.LINK_START(span)
                 currToken == "](" -> MDToken.LINK_INTERSTICE(span)
                 currToken == ")" && tokenHint == MDTokenHint.IsLinkEnd -> MDToken.LINK_END(span)
-                currToken == "---" -> MDToken.TRIPLE_HYPHEN(span)
-                currToken == "====" -> MDToken.TRIPLE_EQUALS(span)
+                currToken.startsWith("---") && currToken.all { it == '-' || it.isWhitespace() } -> MDToken.TRIPLE_HYPHEN(span)
+                currToken.startsWith("===") && currToken.all { it == '=' || it.isWhitespace() } -> MDToken.TRIPLE_EQUALS(span)
+                currToken.startsWith("___") && currToken.all { it == '_' || it.isWhitespace() } -> MDToken.TRIPLE_EQUALS(span)
                 currToken == "#" -> MDToken.HTag.H1(span)
                 currToken == "##" -> MDToken.HTag.H2(span)
                 currToken == "###" -> MDToken.HTag.H2(span)
@@ -178,7 +195,10 @@ class MDTokeniser(private val input: String) {
                 currToken == "#####" -> MDToken.HTag.H5(span)
                 currToken == "######" -> MDToken.HTag.H6(span)
                 else -> {
-                    MDToken.TEXT(currToken, span)
+                    val last = tokens.lastOrNull()
+                    if (last is MDToken.TEXT) {
+                        tokens.pop() as MDToken.TEXT + currToken
+                    } else MDToken.TEXT(currToken, span)
                 }
             }
         )
@@ -188,32 +208,36 @@ class MDTokeniser(private val input: String) {
     private fun tokenise(): List<MDToken> {
         var index = 0
 
-        if (input.startsWith("---")) {
+        val mdInput = if (input.startsWith("+++")) {
             var tmpIndex = 3
-            val finalIndex = input.indexOf("\n---\n", startIndex = tmpIndex)
+            val finalIndex = input.indexOf("\n+++\n", startIndex = tmpIndex)
             val frontmatter = input.substring(tmpIndex, finalIndex)
 
-//            val parsedFrontmatter =
-        }
+            val parsedFrontmatter = com.akuleshov7.ktoml.Toml.decodeFromString<ArticleFrontmatter>(frontmatter)
 
-        outer@while (index < input.length) {
-            val chr = input[index]
+            val rest = input.substring(finalIndex + 5)
+
+            rest
+        } else input
+
+        outer@while (index < mdInput.length) {
+            val chr = mdInput[index]
             when {
                 chr == '>' -> {
                     val tokensTillPrevNewline = tokens.asReversed().takeWhile { it !is MDToken.NEWLINE }
                     var tmpIndex = index
-                    var tempChr: Char? = input[tmpIndex]
+                    var tempChr: Char? = mdInput[tmpIndex]
                     while (tempChr == '>') {
                         currToken += tempChr
                         tmpIndex = tmpIndex + 1
-                        tempChr = input.getOrNull(tmpIndex)
+                        tempChr = mdInput.getOrNull(tmpIndex)
                     }
-                    val nextIsWhitespace = input.getOrNull(tmpIndex).let { it != null && it != '\n' && it.isWhitespace() }
+                    val nextIsWhitespace = mdInput.getOrNull(tmpIndex).let { it != null && it != '\n' && it.isWhitespace() }
 
                     if (tokensTillPrevNewline.all { it is MDToken.NEWLINE || it is MDToken.UL_ITEM || it is MDToken.OL_ITEM || (it is MDToken.TEXT && it.text.isBlank()) } && nextIsWhitespace) {
-                        updateTokens(index..<tmpIndex +1, MDTokenHint.IsBQuote(currToken.length))
+                        updateTokens(index..<(tmpIndex + 1), MDTokenHint.IsBQuote(currToken.length))
                     } else {
-                        updateTokens(index..<tmpIndex + 1)
+                        updateTokens(index..<(tmpIndex + 1))
                     }
                     index = tmpIndex
                 }
@@ -225,26 +249,26 @@ class MDTokeniser(private val input: String) {
                     var tmpIndex = index
                     var tagName = ""
                     // <abc def="a" fgh="e" />
-                    while (tmpIndex < input.length && input[tmpIndex] != '>') {
+                    while (tmpIndex < mdInput.length && mdInput[tmpIndex] != '>') {
                         if (isClose) {
                             tmpIndex += 1
                             continue
                         }
 
-                        var currThing = input[tmpIndex]
+                        var currThing = mdInput[tmpIndex]
 
                         while (currThing.isWhitespace()) {
                             tmpIndex += 1
-                            currThing = input[tmpIndex]
+                            currThing = mdInput[tmpIndex]
                         }
 
                         if (currThing == '<') {
-                            if (input.getOrNull(tmpIndex + 1) == '/'){
+                            if (mdInput.getOrNull(tmpIndex + 1) == '/'){
                                 isClose = true
                                 tmpIndex += 1
                             }
                             tmpIndex += 1
-                            tagName = input.substring(tmpIndex).takeWhile { it.isWordPart() }
+                            tagName = mdInput.substring(tmpIndex).takeWhile { it.isWordPart() }
                             tmpIndex += tagName.length
 
                             if (tagName == "script") isScript = true
@@ -252,7 +276,7 @@ class MDTokeniser(private val input: String) {
                             continue
                         }
 
-                        if (currThing == '/' && input.getOrNull(tmpIndex + 1) == '>') {
+                        if (currThing == '/' && mdInput.getOrNull(tmpIndex + 1) == '>') {
                             isSelfClosing = true
                             tmpIndex += 1
                             break
@@ -260,21 +284,21 @@ class MDTokeniser(private val input: String) {
 
                         val attributeName = if (currThing.isLetter()) {
                             val savedIndex = tmpIndex
-                            while (tmpIndex < input.length && input[tmpIndex].isWordPart()) tmpIndex += 1
-                            currThing = input.getOrNull(tmpIndex) ?: throw IllegalStateException("Unexpected end of input.")
-                            input.substring(savedIndex, tmpIndex)
+                            while (tmpIndex < mdInput.length && mdInput[tmpIndex].isWordPart()) tmpIndex += 1
+                            currThing = mdInput.getOrNull(tmpIndex) ?: throw IllegalStateException("Unexpected end of input.")
+                            mdInput.substring(savedIndex, tmpIndex)
                         } else null
 
                         if (currThing == '=') {
                             tmpIndex += 1
-                            currThing = input[tmpIndex]
+                            currThing = mdInput[tmpIndex]
                         }
 
                         val attributeValue = if (currThing == '"') {
                             val savedIndex = tmpIndex
                             tmpIndex += 1
-                            while (tmpIndex < input.length && input[tmpIndex] != '"') tmpIndex += 1
-                            val attributeContents = input.substring(savedIndex, tmpIndex)
+                            while (tmpIndex < mdInput.length && mdInput[tmpIndex] != '"') tmpIndex += 1
+                            val attributeContents = mdInput.substring(savedIndex, tmpIndex)
                             attributeContents.trim('"')
                         } else null
 
@@ -282,14 +306,14 @@ class MDTokeniser(private val input: String) {
                             attributes.push(attributeName to attributeValue)
                         }
 
-                        if (tmpIndex >= input.length) throw IllegalStateException("Invalid HTML tag at byte $index!")
+                        if (tmpIndex >= mdInput.length) throw IllegalStateException("Invalid HTML tag at byte $index!")
 
-                        if (input[tmpIndex] == '>') {
+                        if (mdInput[tmpIndex] == '>') {
                             if (isScript) {
-                                val endIndex = input.indexOf("</script>", startIndex = tmpIndex)
+                                val endIndex = mdInput.indexOf("</script>", startIndex = tmpIndex)
                                 if (endIndex < 0) throw IllegalStateException("Unclosed script tag at byte $index!")
                                 val actualEnd = endIndex + "</script>".length
-                                val contents = input.substring(tmpIndex + 1, endIndex)
+                                val contents = mdInput.substring(tmpIndex + 1, endIndex)
                                 tokens += MDToken.SCRIPT_TAG(script = contents, attributes.toMap(), index ..< actualEnd)
                                 tmpIndex = actualEnd
                                 isSelfClosing = true
@@ -298,6 +322,13 @@ class MDTokeniser(private val input: String) {
                         }
 
                         tmpIndex += 1
+                    }
+
+                    if (tmpIndex == input.length) {
+                        currToken += chr
+                        updateTokens(index..<(index + 1))
+                        index += 1
+                        continue
                     }
 
                     if (isSelfClosing) {
@@ -319,15 +350,19 @@ class MDTokeniser(private val input: String) {
                 chr == '\\' -> {
                     updateTokens((index - currToken.length)..<index)
                     currToken += chr
-                    currToken += input.getOrNull(index + 1) ?: ""
-                    updateTokens(index..(index + 2), tokenHint = MDTokenHint.IsLinkStart)
+                    currToken += mdInput.getOrNull(index + 1) ?: ""
+                    if (currToken.last() == '\n') {
+                        updateTokens(index..(index + 2), tokenHint = MDTokenHint.IsInlineBreak)
+                    } else {
+                        updateTokens(index..(index + 2), tokenHint = MDTokenHint.IsLinkStart)
+                    }
                     index += 2
                     continue
                 }
 
                 chr == '-' -> {
                     updateTokens((index - currToken.length)..index)
-                    if (input.getOrNull(index + 1)?.isWhitespace() == true) {
+                    if (mdInput.getOrNull(index + 1)?.isWhitespace() == true) {
                         val optionalTypeHint = getListTypeHint(false)
                         currToken += "-"
 
@@ -337,7 +372,7 @@ class MDTokeniser(private val input: String) {
 
                 chr == '1' -> {
                     updateTokens((index - currToken.length)..index)
-                    if (input.getOrNull(index + 1) == '.' && input.getOrNull(index + 2)?.isWhitespace() == true) {
+                    if (mdInput.getOrNull(index + 1) == '.' && mdInput.getOrNull(index + 2)?.isWhitespace() == true) {
                         val optionalTypeHint = getListTypeHint(true)
                         currToken += "1."
 
@@ -352,7 +387,7 @@ class MDTokeniser(private val input: String) {
                     val optionalTypeHint = getListTypeHint(false)
 
                     var tempIdx = index
-                    while (input.getOrNull(tempIdx) == chr) {
+                    while (mdInput.getOrNull(tempIdx) == chr) {
                         if (tempIdx - index > 3) {
                             break
                         } else {
@@ -363,7 +398,7 @@ class MDTokeniser(private val input: String) {
 
                     updateTokens(
                         (tempIdx - currToken.length)..tempIdx,
-                        if (input.getOrNull(tempIdx)?.isWhitespace() != false) optionalTypeHint else null
+                        if (mdInput.getOrNull(tempIdx)?.isWhitespace() != false) optionalTypeHint else null
                     )
 
                     index = tempIdx
@@ -373,13 +408,13 @@ class MDTokeniser(private val input: String) {
                 chr == '!' -> {
                     updateTokens((index - currToken.length)..index)
                     currToken += chr
-                    if (input.getOrNull(index + 1) == '[') {
+                    if (mdInput.getOrNull(index + 1) == '[') {
                         var tempIdx = index
-                        while (input.getOrNull(tempIdx) != '\n') {
-                            if (input.getOrNull(tempIdx) == ']') break
+                        while (mdInput.getOrNull(tempIdx) != '\n') {
+                            if (mdInput.getOrNull(tempIdx) == ']') break
                             tempIdx += 1
                         }
-                        if (input.getOrNull(tempIdx) == ']') {
+                        if (mdInput.getOrNull(tempIdx) == ']') {
                             currToken += '['
                             updateTokens(index..(index + 2))
                             index += 2
@@ -392,11 +427,11 @@ class MDTokeniser(private val input: String) {
                     updateTokens((index - currToken.length)..index)
                     currToken += chr
                     var tempIdx = index
-                    while (input.getOrNull(tempIdx) != '\n') {
-                        if (input.getOrNull(tempIdx) == ']') break
+                    while (mdInput.getOrNull(tempIdx) != '\n') {
+                        if (mdInput.getOrNull(tempIdx) == ']') break
                         tempIdx += 1
                     }
-                    if (input.getOrNull(tempIdx) == ']') {
+                    if (mdInput.getOrNull(tempIdx) == ']') {
                         updateTokens(index..(index + 1), tokenHint = MDTokenHint.IsLinkStart)
                     }
                 }
@@ -404,22 +439,22 @@ class MDTokeniser(private val input: String) {
                 chr == ']' -> {
                     updateTokens((index - currToken.length)..index)
                     currToken += chr
-                    if (input.getOrNull(index + 1) == '(') {
-                        currToken += input[index + 1]
+                    if (mdInput.getOrNull(index + 1) == '(') {
+                        currToken += mdInput[index + 1]
                         updateTokens(index..<(index + 2))
                         index += 2
 
                         var tempIndex = index
-                        if (input[tempIndex] == '<') {
-                            while (tempIndex < input.length && input[tempIndex] != '>') tempIndex += 1
+                        if (mdInput[tempIndex] == '<') {
+                            while (tempIndex < mdInput.length && mdInput[tempIndex] != '>') tempIndex += 1
                         } else {
-                            while (tempIndex < input.length && input[tempIndex] != ')') tempIndex += 1
+                            while (tempIndex < mdInput.length && mdInput[tempIndex] != ')') tempIndex += 1
                         }
 
                         // Get only the link.
-                        val linkUri = URI(input.substring(index + 1, tempIndex))
+                        val linkUri = URI(mdInput.substring(index, tempIndex).trim('<', '>'))
                         tokens += MDToken.LINK_URI(linkUri, index..<(tempIndex + 1))
-                        if (input[tempIndex] == '>') tempIndex += 1
+                        if (mdInput[tempIndex] == '>') tempIndex += 1
                         index = tempIndex
 
                         continue
@@ -452,20 +487,20 @@ class MDTokeniser(private val input: String) {
                 }
 
                 chr.isWhitespace() -> {
-                    updateTokens((index - currToken.length)..index)
                     currToken += chr
+                    val oldIndex = index
                     index += 1
-                    while (index < input.length && input[index].isWhitespace() && input[index] != '\n') {
-                        currToken += input[index]
+                    while (index < mdInput.length && mdInput[index].isWhitespace() && mdInput[index] != '\n') {
+                        currToken += mdInput[index]
                         index += 1
                     }
-                    updateTokens((index - currToken.length)..index)
+                    updateTokens(oldIndex..< index + 1)
                     continue
                 }
 
                 !chr.isWordPart() -> {
-                    updateTokens((index - currToken.length)..index)
                     currToken += chr
+                    updateTokens(index..(index + 1))
                 }
 
                 else -> {
@@ -476,12 +511,12 @@ class MDTokeniser(private val input: String) {
                         updateTokens((index - currToken.length)..index)
                         currToken += chr
                     }
-                    while (input.getOrNull(index + 1)?.isWordPart() == true) {
+                    while (mdInput.getOrNull(index + 1)?.isWordPart() == true) {
                         index += 1
-                        if (index >= input.length) {
+                        if (index >= mdInput.length) {
                             break
                         }
-                        currToken += input[index]
+                        currToken += mdInput[index]
                     }
                     updateTokens((index - currToken.length)..index)
                 }
@@ -501,8 +536,9 @@ class MDTokeniser(private val input: String) {
             else MDTokenHint.IsOListStart(0)
         }
         for (i in tokens.asReversed()) {
-            if (i is MDToken.TEXT && i.text.isBlank()) {
-                wsBeforeNewline = i.text.length
+            if (i is MDToken.TEXT) {
+                if (i.text.isBlank()) wsBeforeNewline = i.text.length
+                else break
             } else if (wsBeforeNewline != null && i !is MDToken.NEWLINE) {
                 wsBeforeNewline = null
                 break
