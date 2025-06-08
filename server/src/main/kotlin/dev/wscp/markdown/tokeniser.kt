@@ -61,7 +61,7 @@ class LineColTracker(val text: String) {
 
 sealed class MDToken(open val span: IntRange) {
     // ([^\n \t]`)|(`[^\n \t])
-    data class SINGLE_GRAVE(override val span: IntRange) : MDToken(span)
+    data class SINGLE_GRAVE(override val span: IntRange, val language: String? = null) : MDToken(span)
 
     // (\n```)|(```\n)
     data class TRIPLE_GRAVE(override val span: IntRange, val language: String? = null) : MDToken(span)
@@ -452,7 +452,7 @@ class MDTokeniser(private val input: String) {
                         }
 
                         // Get only the link.
-                        val linkUri = URI(mdInput.substring(index, tempIndex).trim('<', '>'))
+                        val linkUri = mdInput.substring(index, tempIndex).trim('<', '>')
                         tokens += MDToken.LINK_URI(linkUri, index..<(tempIndex + 1))
                         if (mdInput[tempIndex] == '>') tempIndex += 1
                         index = tempIndex
