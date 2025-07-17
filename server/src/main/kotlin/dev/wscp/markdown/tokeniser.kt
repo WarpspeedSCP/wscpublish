@@ -4,8 +4,6 @@ import dev.wscp.data.ArticleFrontmatter
 import dev.wscp.utils.pop
 import dev.wscp.utils.push
 import kotlinx.serialization.decodeFromString
-import java.net.URI
-import kotlin.math.PI
 
 
 data class LineColPosition(val startLine: Int, val startCol: Int, val endLine: Int, val endCol: Int) {
@@ -58,46 +56,79 @@ class LineColTracker(val text: String) {
     }
 }
 
-
 sealed class MDToken(open val span: IntRange) {
+
+    sealed interface MDSymbolToken {
+        fun stringRepr(): String
+    }
+
     // ([^\n \t]`)|(`[^\n \t])
-    data class SINGLE_GRAVE(override val span: IntRange, val language: String? = null) : MDToken(span)
+    data class SINGLE_GRAVE(override val span: IntRange, val language: String? = null) : MDToken(span), MDSymbolToken {
+        override fun stringRepr(): String = "`"
+    }
 
     // (\n```)|(```\n)
-    data class TRIPLE_GRAVE(override val span: IntRange, val language: String? = null) : MDToken(span)
+    data class TRIPLE_GRAVE(override val span: IntRange, val language: String? = null) : MDToken(span), MDSymbolToken {
+        override fun stringRepr(): String = "```"
+    }
 
     // ([^\n \t]*)|(*[^\n \t])
-    data class SINGLE_ASTERISK(override val span: IntRange) : MDToken(span)
+    data class SINGLE_ASTERISK(override val span: IntRange) : MDToken(span), MDSymbolToken {
+        override fun stringRepr(): String = "*"
+    }
 
     // ([^\n \t]**)|(**[^\n \t])
-    data class DOUBLE_ASTERISK(override val span: IntRange) : MDToken(span)
+    data class DOUBLE_ASTERISK(override val span: IntRange) : MDToken(span), MDSymbolToken {
+        override fun stringRepr(): String = "**"
+    }
 
     // ([^\n \t]***)|(***[^\n \t])
-    data class TRIPLE_ASTERISK(override val span: IntRange) : MDToken(span)
+    data class TRIPLE_ASTERISK(override val span: IntRange) : MDToken(span), MDSymbolToken {
+        override fun stringRepr(): String = "***"
+    }
 
     // _
-    data class SINGLE_UNDERSCORE(override val span: IntRange) : MDToken(span)
+    data class SINGLE_UNDERSCORE(override val span: IntRange) : MDToken(span), MDSymbolToken {
+        override fun stringRepr(): String = "_"
+    }
 
     sealed class LIST_ITEM(open val level: Int, override val span: IntRange) : MDToken(span)
-    data class UL_ITEM(override val level: Int, override val span: IntRange) : LIST_ITEM(level, span)
-    data class OL_ITEM(override val level: Int, override val span: IntRange) : LIST_ITEM(level, span)
+    data class UL_ITEM(override val level: Int, override val span: IntRange) : LIST_ITEM(level, span), MDSymbolToken {
+        override fun stringRepr(): String = "* "
+    }
+    data class OL_ITEM(override val level: Int, override val span: IntRange) : LIST_ITEM(level, span), MDSymbolToken {
+        override fun stringRepr(): String = "1. "
+    }
     // Uses the same level structure.
-    data class BQUOTE(override val level: Int, override val span: IntRange) : LIST_ITEM(level, span)
+    data class BQUOTE(override val level: Int, override val span: IntRange) : LIST_ITEM(level, span), MDSymbolToken {
+        override fun stringRepr(): String = "> "
+    }
 
     // ---
-    data class TRIPLE_HYPHEN(override val span: IntRange) : MDToken(span)
+    data class TRIPLE_HYPHEN(override val span: IntRange) : MDToken(span), MDSymbolToken {
+        override fun stringRepr(): String = "---"
+    }
 
     // ===
-    data class TRIPLE_EQUALS(override val span: IntRange) : MDToken(span)
+    data class TRIPLE_EQUALS(override val span: IntRange) : MDToken(span), MDSymbolToken {
+        override fun stringRepr(): String = "==="
+    }
 
-    data class TRIPLE_UNDERSCORE(override val span: IntRange) : MDToken(span)
+    data class TRIPLE_UNDERSCORE(override val span: IntRange) : MDToken(span), MDSymbolToken {
+        override fun stringRepr(): String = "___"
+    }
 
-    data class LINEBREAK(override val span: IntRange) : MDToken(span)
+    data class LINEBREAK(override val span: IntRange) : MDToken(span), MDSymbolToken {
+        override fun stringRepr(): String = "\n"
+    }
 
     // ^<[^>]*>$
-    data class HTML_TAG(val tag: String, val attributes: Map<String, String?>, override val span: IntRange, val selfClosing: Boolean = false) : MDToken(span)
-    data class HTML_CLOSE_TAG(val tag: String, override val span: IntRange) : MDToken(span)
-    data class SCRIPT_TAG(val script: String, val attributes: Map<String, String?>, override val span: IntRange) : MDToken(span)
+    data class HTML_TAG(val tag: String, val attributes: Map<String, String?>, override val span: IntRange, val selfClosing: Boolean = false) : MDToken(span) {
+    }
+    data class HTML_CLOSE_TAG(val tag: String, override val span: IntRange) : MDToken(span) {
+    }
+    data class SCRIPT_TAG(val script: String, val attributes: Map<String, String?>, override val span: IntRange) : MDToken(span) {
+    }
 
     data class TEXT(val text: String, override val span: IntRange) : MDToken(span) {
         operator fun plus(other: String) = TEXT(
@@ -107,32 +138,55 @@ sealed class MDToken(open val span: IntRange) {
     }
 
     // ^![.*$
-    data class IMAGE_START(override val span: IntRange) : MDToken(span)
+    data class IMAGE_START(override val span: IntRange) : MDToken(span), MDSymbolToken {
+        override fun stringRepr(): String = "!["
+    }
 
     // ^[.*$
-    data class LINK_START(override val span: IntRange) : MDToken(span)
+    data class LINK_START(override val span: IntRange) : MDToken(span), MDSymbolToken {
+        override fun stringRepr(): String = "["
+    }
+
+    data class FOOTNOTE_REF(override val span: IntRange, val ref: String) : MDToken(span)
+
+    data class FOOTNOTE(override val span: IntRange, val ref: String) : MDToken(span)
 
     // ^](.*$
-    data class LINK_INTERSTICE(override val span: IntRange) : MDToken(span)
+    data class LINK_INTERSTICE(override val span: IntRange) : MDToken(span), MDSymbolToken {
+        override fun stringRepr(): String = "]("
+    }
 
     data class LINK_URI(val uri: String, override val span: IntRange) : MDToken(span)
 
     // ^).*$
-    data class LINK_END(override val span: IntRange) : MDToken(span)
+    data class LINK_END(override val span: IntRange) : MDToken(span), MDSymbolToken {
+        override fun stringRepr(): String = ")"
+    }
 
-    sealed class HTag(override val span: IntRange) : MDToken(span) {
-        // ^# .*
-        data class H1(override val span: IntRange) : HTag(span)
+    sealed class HTag(override val span: IntRange) : MDToken(span), MDSymbolToken {
+        data class H1(override val span: IntRange) : HTag(span) {
+            override fun stringRepr(): String = "# "
+        }
 
-        data class H2(override val span: IntRange) : HTag(span)
+        data class H2(override val span: IntRange) : HTag(span) {
+            override fun stringRepr(): String = "## "
+        }
 
-        data class H3(override val span: IntRange) : HTag(span)
+        data class H3(override val span: IntRange) : HTag(span) {
+            override fun stringRepr(): String = "### "
+        }
 
-        data class H4(override val span: IntRange) : HTag(span)
+        data class H4(override val span: IntRange) : HTag(span) {
+            override fun stringRepr(): String = "#### "
+        }
 
-        data class H5(override val span: IntRange) : HTag(span)
+        data class H5(override val span: IntRange) : HTag(span) {
+            override fun stringRepr(): String = "##### "
+        }
 
-        data class H6(override val span: IntRange) : HTag(span)
+        data class H6(override val span: IntRange) : HTag(span) {
+            override fun stringRepr(): String = "###### "
+        }
     }
 
     data class NEWLINE(override val span: IntRange) : MDToken(span)
@@ -144,6 +198,8 @@ sealed class MDToken(open val span: IntRange) {
 
 sealed interface MDTokenHint {
     object IsInlineBreak : MDTokenHint
+    object IsRefLink : MDTokenHint
+    object IsRef : MDTokenHint
     object IsLinkStart : MDTokenHint
     object IsLinkEnd : MDTokenHint
     class IsBQuote(val level: Int) : MDTokenHint
@@ -182,6 +238,13 @@ class MDTokeniser(private val input: String) {
                 currToken == "1." && tokenHint is MDTokenHint.IsOListStart -> MDToken.OL_ITEM(tokenHint.indent, span)
                 currToken == "-" && tokenHint is MDTokenHint.IsUListStart -> MDToken.UL_ITEM(tokenHint.indent, span)
                 currToken == "![" -> MDToken.IMAGE_START(span)
+                currToken.startsWith("[^") -> {
+                    if (tokenHint == MDTokenHint.IsRefLink) {
+                        MDToken.FOOTNOTE_REF(span, currToken.removePrefix("[^").removeSuffix("]"))
+                    } else {
+                        MDToken.FOOTNOTE(span, currToken.removePrefix("[^").removeSuffix("]:"))
+                    }
+                }
                 currToken == "[" && tokenHint == MDTokenHint.IsLinkStart -> MDToken.LINK_START(span)
                 currToken == "](" -> MDToken.LINK_INTERSTICE(span)
                 currToken == ")" && tokenHint == MDTokenHint.IsLinkEnd -> MDToken.LINK_END(span)
@@ -361,9 +424,9 @@ class MDTokeniser(private val input: String) {
                 }
 
                 chr == '-' -> {
-                    updateTokens((index - currToken.length)..index)
+//                    updateTokens((index - currToken.length)..index)
                     if (mdInput.getOrNull(index + 1)?.isWhitespace() == true) {
-                        val optionalTypeHint = getListTypeHint(false)
+                        val optionalTypeHint = getListTypeHint(isOrdered = false)
                         currToken += "-"
 
                         updateTokens(index..(index + 2), tokenHint = optionalTypeHint)
@@ -371,7 +434,7 @@ class MDTokeniser(private val input: String) {
                 }
 
                 chr == '1' -> {
-                    updateTokens((index - currToken.length)..index)
+//                    updateTokens((index - currToken.length)..index)
                     if (mdInput.getOrNull(index + 1) == '.' && mdInput.getOrNull(index + 2)?.isWhitespace() == true) {
                         val optionalTypeHint = getListTypeHint(true)
                         currToken += "1."
@@ -383,7 +446,7 @@ class MDTokeniser(private val input: String) {
                 }
 
                 chr == '*' || chr == '~' || chr == '#' || chr == '_' || chr == '`' -> {
-                    updateTokens((index - currToken.length)..index)
+//                    updateTokens((index - currToken.length)..index)
                     val optionalTypeHint = getListTypeHint(false)
 
                     var tempIdx = index
@@ -406,7 +469,7 @@ class MDTokeniser(private val input: String) {
                 }
 
                 chr == '!' -> {
-                    updateTokens((index - currToken.length)..index)
+//                    updateTokens((index - currToken.length)..index)
                     currToken += chr
                     if (mdInput.getOrNull(index + 1) == '[') {
                         var tempIdx = index
@@ -424,20 +487,34 @@ class MDTokeniser(private val input: String) {
                 }
 
                 chr == '[' -> {
-                    updateTokens((index - currToken.length)..index)
+//                    updateTokens((index - currToken.length)..index)
                     currToken += chr
                     var tempIdx = index
+                    val isFootNoteType = mdInput.getOrNull(tempIdx + 1) == '^'
                     while (mdInput.getOrNull(tempIdx) != '\n') {
                         if (mdInput.getOrNull(tempIdx) == ']') break
                         tempIdx += 1
                     }
                     if (mdInput.getOrNull(tempIdx) == ']') {
-                        updateTokens(index..(index + 1), tokenHint = MDTokenHint.IsLinkStart)
+                        if (isFootNoteType) {
+                            val isFootNote = mdInput.getOrNull(tempIdx + 1) == ':'
+                            if (isFootNote) {
+                                currToken += mdInput.substring(index + 1, tempIdx + 2)
+                                updateTokens(index..<(tempIdx + 2), tokenHint = MDTokenHint.IsRef)
+                                tempIdx += 1
+                            } else {
+                                currToken += mdInput.substring(index + 1, tempIdx + 1)
+                                updateTokens(index..<(tempIdx + 1), tokenHint = MDTokenHint.IsRefLink)
+                            }
+                            index = tempIdx
+                        } else {
+                            updateTokens(index..(index + 1), tokenHint = MDTokenHint.IsLinkStart)
+                        }
                     }
                 }
 
                 chr == ']' -> {
-                    updateTokens((index - currToken.length)..index)
+//                    updateTokens((index - currToken.length)..index)
                     currToken += chr
                     if (mdInput.getOrNull(index + 1) == '(') {
                         currToken += mdInput[index + 1]

@@ -50,14 +50,17 @@ import kotlinx.html.h4
 import kotlinx.html.h5
 import kotlinx.html.h6
 import kotlinx.html.hr
+import kotlinx.html.id
 import kotlinx.html.img
 import kotlinx.html.li
 import kotlinx.html.ol
 import kotlinx.html.p
 import kotlinx.html.pre
 import kotlinx.html.s
+import kotlinx.html.span
 import kotlinx.html.stream.createHTML
 import kotlinx.html.strong
+import kotlinx.html.sup
 import kotlinx.html.u
 import kotlinx.html.ul
 import kotlinx.html.unsafe
@@ -106,6 +109,7 @@ interface MDVisitor<T> {
     fun visitUnderline(node: MDFormat.Underline<*>): T?
 
     fun visitLink(node: MDFormat.Link<*>): T?
+    fun visitFootNoteRef(node: MDFormat.FootNoteRef<*>): T?
     fun visitCode(node: MDFormat.Code<*>): T?
 
     fun visitMultiCode(node: MDFormat.MultilineCode<*>): T?
@@ -121,12 +125,17 @@ interface MDVisitor<T> {
 
     fun visitCustomScript(node: MDFormat.CustomScript<*>): T?
     fun visitQuote(node: MDFormat.Quote<*>): T?
+    fun visitFootNote(node: MDFormat.FootNote<*>): T?
 
     fun visitText(node: MDFormat.Text<*>): T?
 
     fun visit(node: MDFormat<out Tag, out Tag>): T? {
         return node.accept(this)
     }
+}
+
+interface StyleProvider {
+    fun applyStyle(node: Tag)
 }
 
 sealed interface MDFormat<T: Tag, Parent: Tag> {
@@ -161,6 +170,7 @@ sealed interface MDFormat<T: Tag, Parent: Tag> {
             is Underline -> visitor.visitUnderline(this)
 
             is Link -> visitor.visitLink(this)
+            is FootNoteRef<*> -> visitor.visitFootNoteRef(this)
             is Code -> visitor.visitCode(this)
 
             is Paragraph -> visitor.visitParagraph(this)
@@ -177,6 +187,7 @@ sealed interface MDFormat<T: Tag, Parent: Tag> {
             is Text -> visitor.visitText(this)
             is ListItem<*> -> visitor.visitLI(this)
             is MultilineCode<*> -> visitor.visitMultiCode(this)
+            is FootNote<*> -> visitor.visitFootNote(this)
         }
 
     sealed class Heading<T: FlowOrHeadingContent, Parent: HtmlBlockTag>(override val inner: MutableList<MDFormat<*, T>>) : MDFormat<T, Parent>
@@ -236,21 +247,21 @@ sealed interface MDFormat<T: Tag, Parent: Tag> {
         }
     }
 
-    object HorizontalRule : MDFormat<HR, HtmlBlockInlineTag> {
-        override fun toHtml(input: HtmlBlockInlineTag) {
-            input.hr {  }
+    object HorizontalRule : MDFormat<HR, FlowContent> {
+        override fun toHtml(input: FlowContent) {
+            input.hr {}
         }
     }
 
     object LineBreak : Block<BR, FlowContent> {
         override fun toHtml(input: FlowContent) {
-            input.br
+            input.br {}
         }
     }
 
     object InlineLineBreak : Inline<BR, FlowContent> {
         override fun toHtml(input: FlowContent) {
-            input.br
+            input.br {}
         }
     }
 
@@ -335,8 +346,6 @@ sealed interface MDFormat<T: Tag, Parent: Tag> {
     }
     data class MultilineCode<Parent: FlowContent>(override val inner: MutableList<MDFormat<*, CODE>>, val language: String? = null) : BlockInline<CODE, Parent> {
         override fun toHtml(input: Parent) {
-            val langClass = "lang-$language"
-
             input.pre {
                 code {
                     if (language != null) classes = setOf("lang-$language")
@@ -353,6 +362,42 @@ sealed interface MDFormat<T: Tag, Parent: Tag> {
         override fun toHtml(input: Parent) {
             input.apply {
                 +text
+            }
+        }
+    }
+
+    data class FootNoteRef<Parent: FlowContent>(val ref: String, val refSeqNumber: Int) : Inline<SUP, Parent> {
+        override fun toHtml(input: Parent) {
+            input.apply {
+                sup {
+                    id = "$ref-ref"
+                    +"["
+                    a {
+                        href = "#$ref"
+                        +(refSeqNumber.toString())
+                    }
+                    +"]"
+                }
+            }
+        }
+    }
+
+    data class FootNote<Parent: FlowContent>(val ref: String, val refSeqNumber: Int, override val inner: MutableList<MDFormat<*, P>>): Block<P, Parent> {
+        override fun toHtml(input: Parent) {
+            input.apply {
+                p {
+                    id = ref
+                    a {
+                        href = "#$ref-ref"
+                        span {
+                            +"$refSeqNumber:"
+                        }
+                    }
+
+                    for (i in inner) {
+                        i.toHtml(this)
+                    }
+                }
             }
         }
     }
@@ -526,9 +571,12 @@ sealed interface MDFormat<T: Tag, Parent: Tag> {
 }
 
 class MarkdownTreeMaker {
-    fun parse(input: String): List<MDFormat<*, *>> {
+    private val footnotes = mutableMapOf<String, MDFormat.FootNote<FlowContent>>()
+    private var refSeqNumber = 1
+
+    fun <ParentTagType: Tag> parse(input: String): List<MDFormat<out Tag, ParentTagType>> {
         val tokens = input.mdTokens()
-        return parse<HTMLTag>(tokens, LineColTracker(input))
+        return (parse<ParentTagType>(tokens, LineColTracker(input)) + MDFormat.HorizontalRule + footnotes.values) as List<MDFormat<*, ParentTagType>>
     }
 
     fun <ParentTagType: Tag> parse(input: List<MDToken>, lineColTracker: LineColTracker): MutableList<MDFormat<out Tag, ParentTagType>> {
@@ -539,6 +587,16 @@ class MarkdownTreeMaker {
 
         while (pos < input.size) {
             when (val curr = input[pos]) {
+                is MDToken.FOOTNOTE -> {
+                    val rest = input.subList(pos + 1, input.size).takeWhile { it !is MDToken.NEWLINE }
+                    val ref = curr.ref
+                    footnotes[ref] = MDFormat.FootNote(ref, footnotes[ref]?.refSeqNumber ?: -1, parse(rest, lineColTracker))
+                    pos += (rest.size)
+                }
+                is MDToken.FOOTNOTE_REF -> {
+                    footnotes[curr.ref] = MDFormat.FootNote(curr.ref, refSeqNumber, mutableListOf())
+                    output.push(MDFormat.FootNoteRef<FlowContent>(curr.ref, refSeqNumber++) as MDFormat<*, ParentTagType>)
+                }
                 is MDToken.HTag -> {
                     val rest = input.subList(pos + 1, input.size).takeWhile { it !is MDToken.NEWLINE }
 
@@ -602,7 +660,7 @@ class MarkdownTreeMaker {
                     val desc = rest.takeWhile { it !is MDToken.LINK_INTERSTICE }
 
                     val res = if (curr is MDToken.IMAGE_START) {
-                        MDFormat.Image<FlowContent>(desc.joinToString(" ") { if (it is MDToken.TEXT) it.text else "" }, url?.uri)
+                        MDFormat.Image<FlowContent>(desc.joinToString(" ") { if (it is MDToken.TEXT) it.text else if (it is MDToken.SINGLE_ASTERISK) "*" else "" }, url?.uri)
                     } else {
                         MDFormat.Link(parse(desc, lineColTracker), url?.uri)
                     }
@@ -900,8 +958,7 @@ class MarkdownTreeMaker {
             } else if (it is MDToken.LIST_ITEM && it.level <= curr.level) {
                 prevWasNewline.set(false)
                 false
-            }
-            else {
+            } else {
                 prevWasNewline.set(false) // we only want to break if we see consecutive newlines.
                 true
             }
@@ -933,7 +990,7 @@ fun main() {
     val input = File("/home/wscp/jinrui-wa-suitai-shimashita/out5.md").readText()
 
     val thing = createHTML(true).body {
-        MarkdownTreeMaker().parse(input).forEach {
+        MarkdownTreeMaker().parse<HTMLTag>(input).forEach {
 //            with(it as MDFormat<HTMLTag>) {
 //                toHtmlCtor().invoke(this@body)
 //            }

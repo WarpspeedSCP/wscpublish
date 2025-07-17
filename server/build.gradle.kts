@@ -12,6 +12,16 @@ application {
     applicationDefaultJvmArgs = listOf("-Dio.ktor.development=$isDevelopment")
 }
 
+kotlin {
+    sourceSets {
+        all {
+            compilerOptions {
+                freeCompilerArgs.add("-Xcontext-parameters")
+            }
+        }
+    }
+}
+
 tasks.withType<ProcessResources> {
     val wasmOutput = file("../web/build/dist/wasmJs/productionExecutable")
     if (wasmOutput.exists()) {

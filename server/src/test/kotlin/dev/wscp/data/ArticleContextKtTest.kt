@@ -42,10 +42,11 @@ class ArticleContextKtTest {
 - b
   <hr/>
  - *c
-   \*** e
-   ***
+   \*** e[^abc]
+   *** 
  * ***abc\
    def** de*
+[^abc]: a thing people do at [oktoberfest](http://octo.ber)
 </div>
 - > d
   > e
@@ -58,7 +59,7 @@ class ArticleContextKtTest {
 
 //        input = File("/home/wscp/wscp_dev/content/posts/tls/jintai/vol2/chapter2/v2c2p1.md").readText()
         val output = MDTokeniser(input).output
-        val outut = parser.parse<ARTICLE>(output, LineColTracker(input))
+        val outut = parser.parse<ARTICLE>(input)
         CustomHtmlAppender(
             StringBuilder(32768),
             true,
